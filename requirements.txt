@@ -1,0 +1,9 @@
+# Phase 0 (local, no GPU) — sourcing + schema discovery
+gdown>=5.2.0
+ijson>=3.3.0
+requests>=2.32.0
+
+# Phases 1-3, 6 (local, no GPU) — schema graph, path enum, SQL templating, oracle, splits
+sqlglot>=25.0.0
+numpy>=1.26.0
+tqdm>=4.66.0

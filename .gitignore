@@ -1,0 +1,22 @@
+# Python environment — regenerate with: python -m venv .venv && pip install -r requirements.txt
+.venv/
+__pycache__/
+*.pyc
+
+# Data — regenerate per data/DATASET_CARD.md "Regeneration" section.
+# Raw downloads (Spider zip/extract, MMQA mirror JSONs) are multi-GB and exceed
+# GitHub's 100MB per-file limit; generated DBs/caches are similarly large/derived.
+data/raw/
+data/db/
+data/cache/
+data/trajectories/
+data/splits/
+# DATASET_CARD.md itself is source (hand-written provenance/gate doc) — keep it.
+!data/DATASET_CARD.md
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS cruft
+.DS_Store
+Thumbs.db

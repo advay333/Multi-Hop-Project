@@ -75,12 +75,13 @@ class Instance:
 class GoldRecord:
     instance_id: str
     gold_sql: str
-    gold_answer: list[str]  # executing gold_sql, normalised
+    gold_answer: list[list[str]]  # rows from executing gold_sql, each cell normalised
     gold_edges: list[Edge] = field(default_factory=list)
     gold_anchors: list[Anchor] = field(default_factory=list)
     gold_entity_sets: list[list[str]] = field(default_factory=list)  # correct keys after each gold prefix
     gold_trajectory: list[Action] = field(default_factory=list)  # canonical sequence for BC
     fail_reasons: list[str] = field(default_factory=list)  # why it is outside a tier
+    reference_answer: str | None = None  # answer text shipped by the source (MMQA), kept for audit
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -97,12 +98,13 @@ class GoldRecord:
                           lookahead_rows=a.get("lookahead_rows", 0),
                           lookahead_tokens=a.get("lookahead_tokens", 0))
 
-        return cls(instance_id=d["instance_id"], gold_sql=d["gold_sql"], gold_answer=list(d["gold_answer"]),
+        return cls(instance_id=d["instance_id"], gold_sql=d["gold_sql"], gold_answer=[list(r) for r in d["gold_answer"]],
                    gold_edges=[edge(e) for e in d.get("gold_edges", [])],
                    gold_anchors=[Anchor(**a) for a in d.get("gold_anchors", [])],
                    gold_entity_sets=[list(s) for s in d.get("gold_entity_sets", [])],
                    gold_trajectory=[action(a) for a in d.get("gold_trajectory", [])],
-                   fail_reasons=list(d.get("fail_reasons", [])))
+                   fail_reasons=list(d.get("fail_reasons", [])),
+                   reference_answer=d.get("reference_answer"))
 
 
 @dataclass

@@ -81,15 +81,62 @@ referencing separate Spider .sqlite files). Consequences for this ingester:
    (lowercase + collapse `[ _]+` to a single form) and match both column names and
    FK/PK strings through it — do not compare them raw.
 
-6. **SQL uses real table names, not aliases** (`head.head_Name`, not `T1.col`) — this
-   actually simplifies `sqlglot` parsing versus the aliased form the original spec's example
-   assumed; no alias-resolution step needed for MMQA's join_path/predicate extraction.
+6. **SQL sometimes uses aliases.** The three-table file mostly writes real table names
+   (`head.head_Name`); the two-table file often aliases (`department d JOIN management m`).
+   `sqlshape.analyse_sql` resolves aliases, so both work.
 
-TODO (implementation, not yet written):
-- build_sqlite_from_instance(record) -> sqlite3.Connection (in-memory), using finding 2/3
-- resolve_join_graph(table_names, tables, foreign_keys) -> list[FKEdge], using finding 5
-- normalize_instance(record) -> unified Instance, using the oracle (PLAN.md P2)
-  for gold_answer/gold_entity_sets
-  instead of the raw `answer` string
-- schema_signature(table_names, tables) -> str, for Stage F's DB-level split
+Implementation: tables are materialised by `mmqa_db` (one SQLite file per schema signature),
+keys are borrowed from the matching Spider DB (finding 5 makes MMQA's own lists a fallback
+only), and `gold_answer` comes from executing `SQL` in the build (finding 4).
 """
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import ijson
+
+from mhtable.data import mmqa_db
+from mhtable.data.loaders import RawExample, SourceBundle
+from mhtable.data.schema import SchemaGraph
+
+FILES = {2: "mmqa/Synthesized_two_table.json", 3: "mmqa/Synthesized_three_table.json"}
+
+
+def load(files: dict[int, Path], spider: dict[str, SchemaGraph], db_dir: Path,
+         limit: int | None = None) -> SourceBundle:
+    """Stream both MMQA files, materialise each distinct table set once under `db_dir`."""
+    b = SourceBundle()
+    digests: dict[str, str] = {}
+    key_sources: dict[str, int] = {}
+    for k, path in sorted(files.items()):
+        with open(path, "rb") as f:
+            for i, r in enumerate(ijson.items(f, "item", use_float=True)):
+                if limit is not None and i >= limit:
+                    break
+                sig = mmqa_db.schema_signature(r)
+                ref = f"mmqa/{sig}"
+                if ref not in b.db_files:
+                    db_file = db_dir / "mmqa" / f"{sig}.sqlite"
+                    if not db_file.exists():
+                        mmqa_db.materialise(r, db_file)
+                    digests[sig] = mmqa_db.content_digest(r)
+                    cands = mmqa_db.spider_matches(r, spider)
+                    graph, ks = mmqa_db.schema_for(r, db_file, sig, spider[cands[0]] if len(cands) == 1 else None)
+                    key_sources[ks] = key_sources.get(ks, 0) + 1
+                    b.db_files[ref] = db_file
+                    b.schemas[ref] = graph
+                    b.spider_candidates[ref] = cands
+                elif mmqa_db.content_digest(r) != digests[sig]:
+                    raise ValueError(f"MMQA schema {sig} appears with two different contents; "
+                                     "one SQLite file per schema is no longer valid")
+                cands = b.spider_candidates[ref]
+                b.examples.append(RawExample(
+                    source="mmqa", ext_id=f"{k}t{r['id_']}",
+                    db_id=cands[0] if cands else f"mmqa_{sig}", db_ref=ref,
+                    question=r["Question"], sql=r["SQL"],
+                    extra={"mmqa_tables": k, "answer_text": r["answer"], "spider_candidates": cands}))
+    b.stats = {"mmqa_dbs": len(b.db_files), "key_source": key_sources,
+               "unmatched_dbs": sum(1 for c in b.spider_candidates.values() if not c),
+               "ambiguous_dbs": sum(1 for c in b.spider_candidates.values() if len(c) > 1)}
+    return b

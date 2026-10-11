@@ -15,7 +15,7 @@ def test_instance_roundtrip_and_firewall():
 def test_gold_record_roundtrip_through_json():
     edge = (("head.head_id", "management.head_id"),)
     gold = GoldRecord(
-        "mmqa:dept:0", "SELECT 1", ["1903"],
+        "mmqa:dept:0", "SELECT 1", [["1903"]],
         gold_edges=[edge],
         gold_anchors=[Anchor("head.born_state", "=", "alabama")],
         gold_entity_sets=[["1"], ["7"]],

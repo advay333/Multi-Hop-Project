@@ -89,6 +89,15 @@ def push(repo: str, local_path: str | Path, path_in_repo: str, message: str) -> 
     return info.oid
 
 
+def push_large(repo: str, folder: str | Path) -> None:
+    """Resumable upload of a large folder, mirroring its layout at the repo root.
+
+    Uses many small commits and can be re-run after an interruption (molab sessions die);
+    files already uploaded are skipped.
+    """
+    api().upload_large_folder(repo_id=repo_id(repo), folder_path=str(folder), repo_type=repo_type(repo))
+
+
 def remote_sha256(repo: str, paths: list[str], revision: str | None = None) -> dict[str, str | None]:
     """SHA-256 of large (LFS/xet) files already in the repo, keyed by path; None if absent/small."""
     found = {p: None for p in paths}

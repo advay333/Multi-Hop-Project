@@ -70,7 +70,7 @@ src/mhtable/
   train.py          entry point for BC / RL training
   evaluate.py       entry point for every selector
 configs/            env.yaml, reader/*.yaml, algo/*.yaml, experiments/*.yaml
-notebooks/          source_data.py, build_bird.py, embed.py, train.py, evaluate.py  (marimo, molab)
+notebooks/          source_data.py, build_data.py, embed.py, train.py, evaluate.py  (marimo, molab)
 tests/              pytest; runs on CPU in < 2 min
 ```
 
@@ -78,7 +78,7 @@ tests/              pytest; runs on CPU in < 2 min
 
 Each phase ends with a **gate**: a concrete check that must pass before building on top.
 
-### P0 — Repo skeleton (laptop) — code done 2026-10-11; gate pending the molab run
+### P0 — Repo skeleton (laptop) — DONE 2026-10-11 (gate passed on molab)
 - `pyproject.toml` (installable `mhtable` package), config loader, registries, `storage.py`,
   `types.py`, pytest.
 - Create the four private HF repos; `notebooks/source_data.py` runs
@@ -88,18 +88,18 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - **Gate:** `pip install -e .` and `pytest` pass on the laptop and in a molab notebook;
   `storage.fetch` retrieves a raw file on both.
 
-### P1 — Data layer (laptop: Spider + MMQA; molab: BIRD; all output to HF)
-- `norm_value`, `SchemaGraph`, loaders producing a public `Instance` and a separate
-  `GoldRecord` (`DESIGN.md` §5), including tier flags, `fail_reasons` and BIRD `evidence`.
-- MMQA: materialise embedded tables to SQLite; map to Spider `db_id` (3,276 exact matches;
-  the 14 unmatched and 23 ambiguous are grouped by schema signature).
-- Shared 60/10/30 split by DB over Spider ∪ MMQA, stratified by 2-/3-table. BIRD-train DBs →
-  train; BIRD-dev (11 DBs) → a second test set.
-- `notebooks/build_bird.py`: run the same build for BIRD on molab.
-- Everything is pushed to `mhtable-data` and tagged `data-v1`.
-- Record gates G-2 (done), G-3 and category balance in `DATASET_CARD.md`.
-- **Gate:** `build.py` regenerates everything with a fixed seed; split disjointness asserted;
-  every instance's gold SQL re-executes to its stored gold answer.
+### P1 — Data layer (molab builds; laptop dev runs; all output to HF) — code done 2026-10-11
+- `norm_value`, `SchemaGraph`, `sqlshape` (tier analysis), loaders for Spider / MMQA / BIRD
+  producing a public `Instance` and a separate `GoldRecord` (`DESIGN.md` §5).
+- MMQA: 659 SQLite files (one per schema; contents verified identical), mojibake repaired,
+  keys borrowed from the matching Spider DB (649 of 659), MMQA's own key lists otherwise.
+- Shared 60/10/30 split by DB over Spider ∪ MMQA, balanced over 2-/3-table MMQA questions;
+  Spider-only DBs → train; BIRD-train DBs → train; BIRD-dev → `bird_dev`.
+- `notebooks/build_data.py` runs `python -m mhtable.data.build --family {spider_mmqa,bird} --push`.
+- Local full Spider+MMQA build (not pushed): 2.5 min; relaxed-tier usable questions —
+  train 2,179 Spider + 1,266 MMQA; dev 225 + 234; test 711 + 667 (`data/DATASET_CARD.md`).
+- **Gate:** official builds pushed from molab and tagged `data-v1`; split disjointness asserted
+  (in `split.assign`); every instance's gold answer comes from executing its gold SQL.
 
 ### P2 — Oracle (laptop)
 - Parse gold SQL → gold join edges and anchor predicates (`G*`); execute prefixes →
@@ -165,7 +165,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - **G-6 coverage** (P3): if < 85%, widen the action set before training.
 - **Oracle ceiling** (P6): if the reader barely beats truncation even on gold sub-tables, the reader is the bottleneck. Change the reader before investing in RL.
 - **Reader throughput on molab** (P4): sets how many PPO iterations a 12 h session allows.
-- **BIRD token-budget fit** (P1): unknown until processed on molab; decides how much BIRD actually contributes.
+- **BIRD token-budget fit** (P3, needs the BIRD build): decides how much BIRD actually contributes.
 
 ## 5. Success criteria
 

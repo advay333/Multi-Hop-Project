@@ -107,12 +107,54 @@ Full details and the exact record shape are documented at the top of
 | G-4 / G-5 | Template coverage / round-trip pass rate | dropped — no synthetic generation |
 | G-6 | Oracle coverage | pending (P3) |
 | G-7 | Leakage gap | pending (needs baselines, P6) |
-| — | Action-set fit | Spider 1,915 / BIRD ≤5,845 / MMQA 2,254 relaxed-tier (`src/analysis/action_fit.py`) |
-| — | Category balance | pending (P1) |
+| — | Action-set fit | see "Build yields" below |
+| — | Category balance | see "Build yields" below |
+
+---
+
+## Build yields (spider_mmqa family, local full build 2026-10-11, seed 0)
+
+`python -m mhtable.data.build --family spider_mmqa` — numbers from `stats/spider_mmqa.json`.
+"Relaxed" = gold SQL executes to a non-empty answer AND fits the relaxed action tier.
+
+| Source | Questions | DBs | Executes non-empty | Strict | Relaxed | Relaxed by category |
+|---|---|---|---|---|---|---|
+| Spider (train_spider + train_others + dev + test) | 11,840 | 206 | 9,997 | 2,711 | 3,115 | Select 895 / List 1,282 / Count 677 / Numerical 261 |
+| MMQA (2-table + 3-table) | 3,313 | 659 | 2,989 | 1,657 | 2,167 | Select 713 / List 572 / Count 462 / Numerical 420 |
+
+Main reasons a question is unusable — Spider: no join 6,543, empty answer 1,774, subquery
+1,092, set operation 763. MMQA: subquery 594, no join 442, `IN` list (relaxed-only) 393,
+gold SQL fails to run 199, empty answer 99.
+
+Split (database-disjoint; relaxed-tier counts):
+
+| Split | Spider | MMQA |
+|---|---|---|
+| train | 2,179 | 1,266 |
+| dev | 225 | 234 |
+| test | 711 | 667 |
+
+**MMQA data quality (see `DESIGN.md` §11):**
+- MMQA's shipped answers vs executing its own gold SQL (3,114 questions whose SQL runs; a
+  question counts as agreeing when every SQL result value appears in the shipped text):
+  65% agree (differences are formatting only: sentences, 667 pandas-dict answers, joined or
+  dropped columns, rounding), 17% partly agree (fewer rows, one of several tied rows),
+  15% differ completely, 3% the SQL returns nothing. The original Spider DBs agree with our
+  materialised tables on 382/386 sampled questions, so the mismatch is annotation noise in
+  MMQA. Gold answers here come from SQL execution; the shipped text is kept as
+  `reference_answer`.
+- 199 gold queries do not run (171 reference a table the instance does not include, 22 use
+  MySQL `YEAR()`, a few typos); 197 of them also fail on the original Spider DB.
+- Embedded tables contain mojibake ("MisÃ©rables"); repaired when materialising.
+- 3 of 659 MMQA databases match no Spider DB and 7 match two; keys for the unmatched come from
+  MMQA's own key lists.
 
 ---
 
 ## Regeneration
+
+Built data: `notebooks/build_data.py` on molab runs
+`python -m mhtable.data.build --family spider_mmqa --push` (and `--family bird`).
 
 Raw sources are mirrored into the private HF dataset `mhtable-raw` (see `DESIGN.md` §4) by
 `notebooks/source_data.py` on molab, which runs:

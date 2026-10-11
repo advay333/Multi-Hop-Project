@@ -62,6 +62,9 @@ def _(GIT_REF, REPO_URL, WORKDIR, os, token_box):
     else:
         run(["git", "clone", "--depth", "1", "--branch", GIT_REF, REPO_URL, WORKDIR])
     run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{WORKDIR}[dev]"])
+    # An editable install is only picked up by new processes; make this kernel see it too.
+    if os.path.join(WORKDIR, "src") not in sys.path:
+        sys.path.insert(0, os.path.join(WORKDIR, "src"))
 
     free_gb = shutil.disk_usage(os.path.expanduser("~")).free / 2**30
     print(f"free disk: {free_gb:.1f} GiB (BIRD train.zip needs ~9 GiB)")

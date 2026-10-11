@@ -23,13 +23,13 @@ Usage:
 import collections
 import re
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
-import sqlglot
-from sqlglot import exp
+from mhtable.data.execute import QueryTimeout, connect_ro, run, subtable_sql
+from mhtable.data.schema import SchemaGraph
+from mhtable.data.sqlshape import analyse_sql
 
 ROOT = Path(__file__).resolve().parents[3]
 H = 5
@@ -38,254 +38,23 @@ CHARS_PER_TOKEN = 3.5
 EXEC_TIMEOUT_S = 10
 MAX_SUBTABLE_ROWS = 5000  # beyond this the sub-table is far over budget anyway
 
-STRICT_OPS = {exp.EQ: "=", exp.LT: "<", exp.GT: ">"}
-RELAXED_CMP = {exp.LTE: "<=", exp.GTE: ">=", exp.NEQ: "!="}
-
-
-# ---------------------------------------------------------------- schema
-class Schema:
-    """Table -> columns and FK edges from a Spider/BIRD tables.json entry (lowercased)."""
-
-    def __init__(self, entry: dict):
-        tabs = [t.lower() for t in entry["table_names_original"]]
-        self.cols = collections.defaultdict(set)
-        names = []
-        for ti, c in entry["column_names_original"]:
-            names.append((tabs[ti] if ti >= 0 else None, c.lower()))
-            if ti >= 0:
-                self.cols[tabs[ti]].add(c.lower())
-        self.fks = set()
-        for a, b in entry["foreign_keys"]:
-            self.fks.add(frozenset([names[a], names[b]]))
-        self.tables = set(tabs)
-
-    def tables_with_col(self, col):
-        return [t for t, cs in self.cols.items() if col in cs]
-
-
-# ---------------------------------------------------------------- SQL analysis
-def _unwrap(e):
-    while isinstance(e, exp.Paren):
-        e = e.this
-    return e
-
-
-def _conjuncts(e):
-    e = _unwrap(e)
-    if isinstance(e, exp.And):
-        return _conjuncts(e.left) + _conjuncts(e.right)
-    return [e]
-
-
-def analyse_sql(sql: str, schema: Schema | None):
-    """Return dict with structural features and the list of reasons it fails each tier."""
-    out = {"reasons": [], "relaxed_reasons": []}
-    try:
-        ast = sqlglot.parse_one(sql, read="sqlite")
-    except Exception:
-        out["reasons"] = out["relaxed_reasons"] = ["parse_error"]
-        return out, None
-
-    hard = []  # breaks both tiers
-
-    if isinstance(ast, (exp.Union, exp.Intersect, exp.Except)):
-        hard.append("set_op")
-        out["reasons"] = out["relaxed_reasons"] = hard
-        return out, ast
-    if not isinstance(ast, exp.Select):
-        out["reasons"] = out["relaxed_reasons"] = ["not_select"]
-        return out, ast
-    if any(s is not ast for s in ast.find_all(exp.Select)):
-        hard.append("subquery")
-
-    # --- tables and aliases
-    alias2tab, tab_list = {}, []
-    for t in ast.find_all(exp.Table):
-        if t.find_ancestor(exp.Subquery):
-            continue
-        name = t.name.lower()
-        tab_list.append(name)
-        alias2tab[(t.alias or t.name).lower()] = name
-        alias2tab[name] = name
-    out["n_tables"] = len(tab_list)
-    if len(set(tab_list)) < len(tab_list):
-        hard.append("self_join")
-
-    def resolve(col: exp.Column):
-        """(table, col) or None if it doesn't resolve (e.g. a double-quoted string literal)."""
-        c = col.name.lower()
-        if col.table:
-            t = alias2tab.get(col.table.lower())
-            return (t, c) if t else None
-        if schema is None:
-            return (None, c)
-        cands = [t for t in set(tab_list) if c in schema.cols.get(t, ())]
-        return (cands[0], c) if len(cands) == 1 else None
-
-    def is_literal(e):
-        e = _unwrap(e)
-        if isinstance(e, exp.Neg):
-            e = e.this
-        if isinstance(e, (exp.Literal, exp.Null, exp.Boolean)):
-            return True
-        # Spider writes strings as "Alabama", which sqlite parses as an identifier
-        return (isinstance(e, exp.Column) and not e.table and e.this.args.get("quoted")
-                and resolve(e) is None)
-
-    def is_col(e):
-        e = _unwrap(e)
-        return isinstance(e, exp.Column) and not is_literal(e)
-
-    # --- join edges
-    edges = []
-    joins = ast.args.get("joins") or []
-    for j in joins:
-        on = j.args.get("on")
-        if on is None:
-            if j.args.get("using"):
-                hard.append("join_using")
-            else:
-                out.setdefault("_where_joins_needed", True)
-            continue
-        pairs = []
-        for c in _conjuncts(on):
-            if isinstance(c, exp.EQ) and is_col(c.left) and is_col(c.right):
-                pairs.append((resolve(_unwrap(c.left)), resolve(_unwrap(c.right))))
-            else:
-                hard.append("non_equi_join")
-        if pairs:
-            edges.append(pairs)
-
-    # --- WHERE predicates (column-column equalities across tables count as joins)
-    anchors, relaxed_only = [], []
-    where = ast.args.get("where")
-    if where is not None:
-        for c in _conjuncts(where.this):
-            if isinstance(c, exp.Or):
-                hard.append("or_predicate")
-                continue
-            if type(c) in STRICT_OPS or type(c) in RELAXED_CMP:
-                l, r = _unwrap(c.left), _unwrap(c.right)
-                if is_col(l) and is_col(r):
-                    if type(c) is exp.EQ:
-                        edges.append([(resolve(l), resolve(r))])
-                    else:
-                        hard.append("col_col_compare")
-                    continue
-                if is_col(r) and is_literal(l):
-                    l, r = r, l
-                if is_col(l) and is_literal(r):
-                    anchors.append((resolve(l), STRICT_OPS.get(type(c)) or RELAXED_CMP[type(c)]))
-                    if type(c) in RELAXED_CMP:
-                        relaxed_only.append("op_" + RELAXED_CMP[type(c)])
-                else:
-                    hard.append("func_or_expr_predicate")
-            elif isinstance(c, (exp.Like, exp.ILike, exp.In, exp.Between, exp.Is)):
-                if is_col(c.this):
-                    anchors.append((resolve(_unwrap(c.this)), type(c).__name__.lower()))
-                    relaxed_only.append(type(c).__name__.lower())
-                else:
-                    hard.append("func_or_expr_predicate")
-            elif isinstance(c, exp.Not):
-                inner = _unwrap(c.this)
-                if isinstance(inner, (exp.Like, exp.In, exp.Is)) and is_col(inner.this):
-                    anchors.append((resolve(_unwrap(inner.this)), "not_" + type(inner).__name__.lower()))
-                    relaxed_only.append("not_" + type(inner).__name__.lower())
-                else:
-                    hard.append("func_or_expr_predicate")
-            else:
-                hard.append("func_or_expr_predicate")
-    if ast.args.get("having"):
-        out["has_having"] = True
-
-    out["n_joins"] = len(edges)
-    out["n_anchors"] = len(anchors)
-    out["anchors"] = anchors
-    out["edges"] = edges
-
-    if len(edges) == 0:
-        hard.append("no_join")
-    if len(edges) != len(set(tab_list)) - 1 and "self_join" not in hard and edges:
-        hard.append("join_graph_not_tree")
-    if any(None in p for e in edges for p in e) or any(a[0] is None for a in anchors):
-        hard.append("unresolved_column")
-
-    # --- FK check (strict only)
-    strict_extra = []
-    if schema is not None and edges and "unresolved_column" not in hard:
-        for e in edges:
-            if not all(frozenset(p) in schema.fks for p in e):
-                strict_extra.append("join_not_declared_fk")
-                break
-
-    steps = max(len(anchors), 1) + len(edges)
-    if len(anchors) > 3:
-        hard.append("too_many_anchors")
-    elif len(anchors) == 3:
-        strict_extra.append("three_anchors")
-    if steps > H - 1:
-        hard.append("horizon_exceeded")
-
-    # --- reader-side features (do not affect fit, but matter for the reader)
-    sel = ast.expressions
-    out["agg"] = sorted({type(a).__name__ for s in sel for a in s.find_all(exp.AggFunc)})
-    out["arith_projection"] = any(s.find(exp.Div, exp.Mul, exp.Sub, exp.Add, exp.Case, exp.If)
-                                  for s in sel)
-    out["order_limit"] = bool(ast.args.get("order") and ast.args.get("limit"))
-    out["category"] = ("Count" if "Count" in out["agg"] else
-                       "Numerical" if out["agg"] or out["arith_projection"] else
-                       "List" if len(sel) > 1 or out["order_limit"] else "Select")
-
-    out["relaxed_reasons"] = sorted(set(hard))
-    out["reasons"] = sorted(set(hard + strict_extra + relaxed_only))
-    return out, ast
-
-
-# ---------------------------------------------------------------- execution checks
-def _connect(db_path: Path):
-    con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
-    con.text_factory = lambda b: b.decode("utf-8", "replace")
-    return con
-
-
-def _run(con, sql, max_rows=None):
-    deadline = time.time() + EXEC_TIMEOUT_S
-    con.set_progress_handler(lambda: int(time.time() > deadline), 10000)
-    cur = con.execute(sql)
-    return cur.fetchmany(max_rows) if max_rows else cur.fetchall()
-
-
-def subtable_sql(ast: exp.Select) -> str:
-    """Gold sub-table: FROM/JOIN/WHERE of the gold query projected onto every column it uses."""
-    cols = {}
-    for c in ast.find_all(exp.Column):
-        if c.table:
-            cols[c.sql(dialect="sqlite")] = None
-    proj = ", ".join(cols) or "*"
-    frm = ast.args.get("from") or ast.args.get("from_")  # key renamed in sqlglot >= 26
-    sql = f"SELECT {proj} {frm.sql(dialect='sqlite')}"
-    for j in ast.args.get("joins") or []:
-        sql += " " + j.sql(dialect="sqlite")
-    if ast.args.get("where"):
-        sql += " " + ast.args["where"].sql(dialect="sqlite")
-    return sql
 
 
 def exec_checks(db_path: Path, gold_sql: str, ast):
     res = {}
     try:
-        con = _connect(db_path)
+        con = connect_ro(db_path)
     except Exception:
         return {"exec": "no_db"}
     try:
-        rows = _run(con, gold_sql)
+        rows = run(con, gold_sql, EXEC_TIMEOUT_S)
         res["exec"] = "ok" if rows and any(v is not None for r in rows for v in r) else "empty"
     except Exception as e:
-        res["exec"] = "timeout" if "interrupt" in str(e).lower() else "error"
+        res["exec"] = "timeout" if isinstance(e, QueryTimeout) else "error"
         con.close()
         return res
     try:
-        sub = _run(con, subtable_sql(ast), MAX_SUBTABLE_ROWS + 1)
+        sub = run(con, subtable_sql(ast), EXEC_TIMEOUT_S, MAX_SUBTABLE_ROWS + 1)
         n = len(sub)
         chars = sum(len(str(v)) + 3 for r in sub for v in r)
         res["subtable_rows"] = n
@@ -301,7 +70,7 @@ def exec_checks(db_path: Path, gold_sql: str, ast):
 # ---------------------------------------------------------------- dataset loaders
 def load_spider(exclude_mmqa=True):
     base = ROOT / "data/raw/spider/spider_data"
-    schemas = {e["db_id"]: Schema(e) for e in json.load(open(base / "tables.json"))}
+    schemas = {e["db_id"]: SchemaGraph.from_tables_json(e) for e in json.load(open(base / "tables.json"))}
     items = [dict(db_id=x["db_id"], question=x["question"], sql=x["query"], split="train")
              for x in json.load(open(base / "train_spider.json"))]
     items += [dict(db_id=x["db_id"], question=x["question"], sql=x["query"], split="train_others")
@@ -317,7 +86,7 @@ def load_bird():
     base = ROOT / "data/raw/bird"
     tr = base / "train"
     tables = tr / "train_tables.json"  # ships inside train.zip; absent until it is extracted
-    schemas = {e["db_id"]: Schema(e) for e in json.load(open(tables))} if tables.exists() else {}
+    schemas = {e["db_id"]: SchemaGraph.from_tables_json(e) for e in json.load(open(tables))} if tables.exists() else {}
     items = [dict(db_id=x["db_id"], question=x["question"], sql=x["SQL"], split="train",
                   evidence=x.get("evidence", ""))
              for x in json.load(open(tr / "train.json"))]
@@ -348,7 +117,7 @@ def mmqa_source_dbs(schemas):
     cache = ROOT / "data/cache/mmqa_source_dbs.json"
     if cache.exists():
         return set(json.load(open(cache)))
-    db_tables = {db: {(_norm_name(t), frozenset(_norm_name(c) for c in cs)) for t, cs in s.cols.items()}
+    db_tables = {db: {(_norm_name(t), frozenset(_norm_name(c) for c in s.column_set(t))) for t in s.tables}
                  for db, s in schemas.items()}
     hits = set()
     for inst in mmqa_table_sets():
@@ -378,7 +147,7 @@ def main(name):
     items, schemas, excluded = loader()
     rows = []
     for i, it in enumerate(items):
-        a, ast = analyse_sql(it["sql"], schemas.get(it["db_id"]))
+        a, ast = analyse_sql(it["sql"], schemas.get(it["db_id"]), H)
         r = dict(db_id=it["db_id"], split=it["split"], mmqa_source_db=it["mmqa_source_db"],
                  strict=not a["reasons"], relaxed=not a["relaxed_reasons"], **a)
         if r["relaxed"] and it["db_path"] is not None and Path(it["db_path"]).exists():

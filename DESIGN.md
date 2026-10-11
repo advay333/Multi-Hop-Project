@@ -75,17 +75,22 @@ Kaggle / Colab are interchangeable with molab: the same notebook body works anyw
 Layout of `mhtable-data`:
 
 ```
-instances/{spider,mmqa,bird}.jsonl     public fields only (§5.1)
-gold/{spider,mmqa,bird}.jsonl          gold fields, keyed by instance_id (§5.2)
-splits/{train,dev,test,bird_dev}.txt   instance ids
-splits/db_assignment.json              db_id -> split (proves disjointness)
+instances/{spider,mmqa,bird}.jsonl        public fields only (§5.1)
+gold/{spider,mmqa,bird}.jsonl             gold fields, keyed by instance_id (§5.2)
+schemas/{spider,mmqa,bird}.json           db_ref -> SchemaGraph (tables, columns, PKs, FKs)
+splits/<family>/{train,dev,test,bird_dev}.txt   instance ids
+splits/<family>/db_assignment.json        database -> split (proves disjointness)
+stats/<family>.json                       yields, tier counts, failure reasons, split sizes
 db/spider/<db_id>.sqlite
-db/mmqa/<schema_sig>.sqlite            materialised from MMQA's embedded tables
+db/mmqa/<schema_sig>.sqlite               materialised from MMQA's embedded tables
 db/bird/<db_id>.sqlite
-index/edges/<db_id>.json               candidate join edges + JAR features
-index/cells/<db_id>.jsonl              distinct (column, value) pairs for anchors
-DATASET_CARD.md                         provenance, gate numbers, yields
+index/edges/<db_ref>.json                 (P3) candidate join edges + JAR features
+index/cells/<db_ref>.jsonl                (P3) distinct (column, value) pairs for anchors
 ```
+
+A **family** is a group of sources built and split together because their databases overlap:
+`spider_mmqa` (MMQA reuses Spider databases) and `bird`. Families are built independently
+(`python -m mhtable.data.build --family ...`) and pushed into the same repo.
 
 ### 4.2 Versioning
 
@@ -126,8 +131,8 @@ All records are plain JSON-serialisable dataclasses in `mhtable/types.py`.
 | `db_id` | str | source database (for splitting; never a feature) |
 | `question` | str | natural-language question |
 | `evidence` | str \| None | BIRD's external-knowledge hint, appended to the question |
-| `tables` | list[str] | tables in the episode (gold tables + distractors at build time) |
-| `n_gold_tables` | int | 2 / 3 / ... (reporting slices only) |
+| `tables` | list[str] | every table of the database (Spider/BIRD: the whole DB, so non-gold tables are natural distractors; MMQA: its 2–3 tables) |
+| `n_gold_tables` | int | tables referenced by the gold SQL (reporting slices only) |
 | `category` | str | Select / List / Count / Numerical |
 | `tier` | dict | `{"strict": bool, "relaxed": bool}` |
 
@@ -137,12 +142,13 @@ All records are plain JSON-serialisable dataclasses in `mhtable/types.py`.
 |---|---|---|
 | `instance_id` | str | join key |
 | `gold_sql` | str | as released |
-| `gold_answer` | list[str] | executing `gold_sql`, normalised with `norm_value` |
+| `gold_answer` | list[list[str]] | rows from executing `gold_sql`, each cell normalised with `norm_value` |
 | `gold_edges` | list[Edge] | join edges in the gold SQL (unordered column pairs) |
 | `gold_anchors` | list[Anchor] | filters `(table.column, op, normalised value)` |
 | `gold_entity_sets` | list[list[str]] | correct row keys after each prefix of the gold plan |
 | `gold_trajectory` | list[Action] | canonical action sequence for BC |
-| `fail_reasons` | list[str] | why it is outside a tier (empty if it fits) |
+| `fail_reasons` | list[str] | why it is outside a tier (empty if it fits), incl. `empty_answer`, `exec_error`, `exec_timeout`, `answer_too_large` |
+| `reference_answer` | str \| None | answer text shipped by the source (MMQA only); kept because it often disagrees with executing the SQL (§11) |
 
 Keeping gold in a separate file makes the firewall structural: code that only loads
 `instances/` cannot leak gold.
@@ -215,11 +221,14 @@ Demands: a YAML path. Outputs: a frozen `Config`, saved verbatim into every run.
 | Module | Demands | Outputs |
 |---|---|---|
 | `data/norm.py` | any value | `norm_value(v) -> str`: the only normaliser (casefold, whitespace, numeric canonical form, `<null>`, ISO dates) |
-| `data/schema.py` | Spider/BIRD `tables.json` entry, or a materialised MMQA DB | `SchemaGraph`: `tables`, `columns(t)`, `is_pk(t,c)`, `declared_fks()` |
-| `data/mmqa_db.py` | one MMQA record | SQLite file at `db/mmqa/<schema_sig>.sqlite`; `schema_signature()`; mapping to Spider `db_id` |
-| `data/loaders/{spider,bird,mmqa}.py` | raw files from `mhtable-raw` | iterator of `(Instance, gold_sql)` |
-| `data/split.py` | all instances + `db_id` groups | split id lists + `db_assignment.json`; asserts disjointness |
-| `data/build.py` | config (`sources`, `seed`, `distractors_k`) | everything in `mhtable-data` (§4.1), pushed and tagged |
+| `data/schema.py` | Spider/BIRD `tables.json` entry, or a SQLite file | `SchemaGraph`: `tables`, `columns`, `column_set(t)`, `is_pk(t,c)`, `fks`, `edges_from(t)`, `is_fk_edge(e)` |
+| `data/sqlshape.py` | gold SQL + `SchemaGraph` | structural features, strict/relaxed failure reasons, question category |
+| `data/execute.py` | SQLite path + SQL | read-only connection, `run(...)` with a wall-clock timeout, gold sub-table SQL |
+| `data/raw.py` | raw repo paths | local file paths; zips extracted once into a checksum-keyed cache |
+| `data/mmqa_db.py` | one MMQA record | SQLite file at `db/mmqa/<schema_sig>.sqlite` (types inferred, mojibake repaired); Spider `db_id` matches; keys borrowed from Spider |
+| `data/loaders/{spider,bird,mmqa}.py` | extracted raw files | `SourceBundle`: `RawExample`s (question, SQL, db refs, audit fields), schemas, DB files |
+| `data/split.py` | all `RawExample`s of a family | `{instance_id: split}`, `{database: split}`; asserts disjointness |
+| `data/build.py` | `--family`, seed, horizon, timeout | everything in `mhtable-data` for that family (§4.1), pushed with `--push`, tagged with `--tag` |
 
 ### 6.3 Oracle
 
@@ -342,8 +351,9 @@ source, 2-/3-table, category, monotone vs non-monotone. Paired bootstrap for dif
 **Sourcing (once, molab):** download Spider (Google Drive), MMQA mirror (Google Drive), BIRD
 (official zips) → checksum → push to `mhtable-raw`.
 
-**Build (laptop for Spider+MMQA, molab for BIRD):** fetch raw → loaders → materialise MMQA DBs →
-oracle → split → edge and cell indexes → push `mhtable-data`, tag `data-vN`.
+**Build (molab, `notebooks/build_data.py`; laptop only for `--limit` dev runs):** fetch raw →
+loaders → materialise MMQA DBs → execute gold SQL + tier analysis → split → (P2) oracle labels →
+(P3) edge and cell indexes → push `mhtable-data`, tag `data-vN`.
 
 **Embed (molab):** fetch `mhtable-data` → collect all texts → encode → push `mhtable-cache`.
 
@@ -391,7 +401,23 @@ norm round-trips; oracle entity sets on known queries; env masking and determini
 trajectory reaches the gold sub-table; shaping telescopes; GAE at γ = 1; firewall assertions;
 a 20-question PPO overfit with the mock reader (gate G-8, marked slow).
 
-## 11. Glossary
+## 11. Known data caveats
+
+- **MMQA's answer strings often disagree with its own SQL.** Over the 3,114 questions whose
+  SQL runs: 65% agree once formatting is ignored (sentences, pandas-dict answers, joined or
+  dropped columns, rounding); 17% partly agree (MMQA lists fewer rows or picks one of several
+  tied rows); 18% genuinely differ (wrong counts, different values, or the SQL returns nothing).
+  The original Spider databases give the same SQL results as our materialised tables 99% of the
+  time, so the disagreement is in MMQA's annotations, not our reconstruction. `gold_answer` is
+  the SQL execution (consistent with the oracle and rewards); `reference_answer` keeps the
+  shipped text. Consequence: our MMQA scores are not directly comparable to MMQA's published
+  numbers, which were scored against the shipped answers.
+- **6% of MMQA gold SQL does not run** (missing tables, MySQL functions, typos) and 3% returns
+  nothing; these are excluded via `fail_reasons`.
+- **MMQA's embedded tables contain mojibake** ("MisÃ©rables"); repaired at materialisation.
+- **15% of Spider questions return an empty answer** on Spider's own databases; excluded.
+
+## 12. Glossary
 
 | Term | Meaning |
 |---|---|

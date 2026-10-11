@@ -1,5 +1,5 @@
 """
-One-off inspection tool for the MMQA mirror files (Phase 0, step 0c).
+One-off inspection tool for the MMQA mirror files (data sourcing).
 
 The original MMQA data link in the paper (anonymous.4open.science/r/MMQA-34B1) is dead.
 The replacement is a Google Drive folder with two large JSON files

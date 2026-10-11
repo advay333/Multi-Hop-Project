@@ -1,6 +1,6 @@
 """
 Parses the MMQA mirror files (data/raw/mmqa_mirror/Synthesized_{two,three}_table.json)
-into the unified instance schema defined in TASK_01_DATASET.md §3.
+into the unified Instance schema (PLAN.md phase P1).
 
 SCHEMA FINDINGS (from src/mmqa_schema_probe.py, run against both mirror files on
 2026-08-12 — see data/DATASET_CARD.md for the checksum/date this was verified against):
@@ -26,7 +26,7 @@ Each file is a top-level JSON array. One element looks like:
       "foreign_keys": ["head_ID", "Department_ID"]                     # one per join edge (n_tables - 1), NOT (table,col) pairs
     }
 
-This differs from what TASK_01_DATASET.md §2.2 assumed (a small annotation file
+This differs from what the original spec assumed (a small annotation file
 referencing separate Spider .sqlite files). Consequences for this ingester:
 
 1. **No db_id field.** MMQA instances don't name their source Spider database. Since
@@ -82,14 +82,14 @@ referencing separate Spider .sqlite files). Consequences for this ingester:
    FK/PK strings through it — do not compare them raw.
 
 6. **SQL uses real table names, not aliases** (`head.head_Name`, not `T1.col`) — this
-   actually simplifies `sqlglot` parsing versus the aliased form PROJECT.md's example
+   actually simplifies `sqlglot` parsing versus the aliased form the original spec's example
    assumed; no alias-resolution step needed for MMQA's join_path/predicate extraction.
 
 TODO (implementation, not yet written):
 - build_sqlite_from_instance(record) -> sqlite3.Connection (in-memory), using finding 2/3
 - resolve_join_graph(table_names, tables, foreign_keys) -> list[FKEdge], using finding 5
-- normalize_instance(record) -> dict matching TASK_01_DATASET.md §3 schema, using
-  Stage E's oracle extraction (already built in Phase 1) for gold_answer/gold_entity_sets
+- normalize_instance(record) -> unified Instance, using the oracle (PLAN.md P2)
+  for gold_answer/gold_entity_sets
   instead of the raw `answer` string
 - schema_signature(table_names, tables) -> str, for Stage F's DB-level split
 """

@@ -114,21 +114,15 @@ Full details and the exact record shape are documented at the top of
 
 ## Regeneration
 
-Sourcing commands (from project root, `.venv` activated):
+Raw sources are mirrored into the private HF dataset `mhtable-raw` (see `DESIGN.md` §4) by
+`notebooks/source_data.py` on molab, which runs:
 
 ```bash
-pip install -r requirements.txt
-
-# Spider
-gdown "https://drive.google.com/uc?id=1403EGqzIDoHMdQF4c9Bkyl7dZLZ5Wt6J" -O data/raw/spider/spider.zip
-unzip -q data/raw/spider/spider.zip -d data/raw/spider/
-
-# MMQA mirror
-gdown --folder "https://drive.google.com/drive/folders/1XQ9djKSK4yjxLWAmHMzsyPAKMqdCIpXo" -O data/raw/mmqa_mirror/
-
-sha256sum data/raw/mmqa_mirror/*.json data/raw/spider/spider.zip > data/raw/CHECKSUMS.sha256
+pip install -e ".[dev]"
+python -m mhtable.data.source --sources spider mmqa bird
 ```
 
-Re-download and diff `CHECKSUMS.sha256` if either source disappears or changes —
-that is the trigger to fall back (email the MMQA authors, or evaluate on held-out
+Expected checksums live in `src/mhtable/data/source.py` (`SOURCES`); the repo's
+`CHECKSUMS.sha256` records what was actually mirrored. A checksum mismatch stops the run — that
+is the trigger to investigate (and, if MMQA disappears upstream, to fall back to held-out
 Spider/BIRD databases only).

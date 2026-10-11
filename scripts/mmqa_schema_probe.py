@@ -8,8 +8,8 @@ is unknown. Do NOT json.load() these files whole — they are hundreds of MB and
 exhaust memory on a laptop. This script streams with ijson instead.
 
 Usage:
-    python src/mmqa_schema_probe.py data/raw/mmqa_mirror/Synthesized_two_table.json
-    python src/mmqa_schema_probe.py data/raw/mmqa_mirror/Synthesized_three_table.json
+    python scripts/mmqa_schema_probe.py data/raw/mmqa_mirror/Synthesized_two_table.json
+    python scripts/mmqa_schema_probe.py data/raw/mmqa_mirror/Synthesized_three_table.json
 """
 
 import ijson

@@ -2,7 +2,7 @@
 Parses the MMQA mirror files (data/raw/mmqa_mirror/Synthesized_{two,three}_table.json)
 into the unified Instance schema (PLAN.md phase P1).
 
-SCHEMA FINDINGS (from src/mmqa_schema_probe.py, run against both mirror files on
+SCHEMA FINDINGS (from scripts/mmqa_schema_probe.py, run against both mirror files on
 2026-08-12 — see data/DATASET_CARD.md for the checksum/date this was verified against):
 
 Each file is a top-level JSON array. One element looks like:

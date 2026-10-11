@@ -1,11 +1,12 @@
-# Python environment — regenerate with: python -m venv .venv && pip install -r requirements.txt
+# Python environment — regenerate with: python -m venv .venv && pip install -e ".[dev]"
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+__marimo__/
 
-# Data — regenerate per data/DATASET_CARD.md "Regeneration" section.
-# Raw downloads (Spider zip/extract, MMQA mirror JSONs) are multi-GB and exceed
-# GitHub's 100MB per-file limit; generated DBs/caches are similarly large/derived.
+# Data lives on HuggingFace (DESIGN.md §4); anything under data/ is a local cache.
 data/raw/
 data/db/
 data/cache/

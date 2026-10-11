@@ -15,9 +15,9 @@ Plus, when a DB is available, execution checks: gold SQL runs and is non-empty, 
 gold sub-table (FROM/JOIN/WHERE, projected onto referenced columns) fits B tokens.
 
 Usage:
-    python src/analysis/action_fit.py spider
-    python src/analysis/action_fit.py bird
-    python src/analysis/action_fit.py mmqa
+    python -m mhtable.analysis.action_fit spider
+    python -m mhtable.analysis.action_fit bird
+    python -m mhtable.analysis.action_fit mmqa
 """
 
 import collections
@@ -31,7 +31,7 @@ from pathlib import Path
 import sqlglot
 from sqlglot import exp
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 H = 5
 BUDGET_TOKENS = 4096
 CHARS_PER_TOKEN = 3.5

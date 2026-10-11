@@ -1,0 +1,29 @@
+# Defaults shared by every experiment. Experiment files list this under `_base_` and
+# override what they change. Component sections take `name:` plus that component's kwargs.
+seed: 0
+
+data:
+  revision: null        # HF tag of mhtable-data, e.g. data-v1; null = latest (dev only)
+  tier: relaxed         # strict | relaxed
+  sources: [spider, mmqa]
+
+env:
+  horizon: 5
+  budget_tokens: 4096
+  edges: inferred       # inferred | gold_fk
+  distractors_k: 0
+
+reader:
+  name: mock
+
+policy:
+  name: mlp
+  d: 256
+
+algo:
+  name: ppo
+
+reward:
+  variant: R1           # R0 sparse | R1 shaped
+  beta: 0.5
+  lambda_cost: 0.1

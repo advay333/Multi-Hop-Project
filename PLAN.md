@@ -78,12 +78,13 @@ tests/              pytest; runs on CPU in < 2 min
 
 Each phase ends with a **gate**: a concrete check that must pass before building on top.
 
-### P0 — Repo skeleton (laptop)
-- `pyproject.toml` (installable `mhtable` package), config loader, registries, `storage.py`, pytest.
-- Create the four private HF repos; `notebooks/source_data.py` downloads Spider, the MMQA
-  mirror and BIRD on molab, checksums them against `data/raw/CHECKSUMS.sha256`, and pushes to
-  `mhtable-raw`.
-- Move `src/analysis/action_fit.py` under the package.
+### P0 — Repo skeleton (laptop) — code done 2026-10-11; gate pending the molab run
+- `pyproject.toml` (installable `mhtable` package), config loader, registries, `storage.py`,
+  `types.py`, pytest.
+- Create the four private HF repos; `notebooks/source_data.py` runs
+  `python -m mhtable.data.source` on molab, which downloads Spider, the MMQA mirror and BIRD,
+  verifies checksums (`SOURCES` in `src/mhtable/data/source.py`), and pushes to `mhtable-raw`.
+- `src/analysis/action_fit.py` moved to `mhtable.analysis.action_fit`.
 - **Gate:** `pip install -e .` and `pytest` pass on the laptop and in a molab notebook;
   `storage.fetch` retrieves a raw file on both.
 

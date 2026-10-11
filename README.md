@@ -1,3 +1,24 @@
-What's on GitHub now: PROJECT.md, TASK_01_DATASET.md, the three reference PDFs, requirements.txt, .gitignore, data/DATASET_CARD.md, and src/mmqa_schema_probe.py + src/mmqa_ingest.py.
+# Multi-Hop Table Reasoning via RL
 
-Deliberately excluded (via .gitignore): .venv/ and everything under data/raw|db|cache|trajectories|splits/ — that's ~2.8GB of downloaded/generated data, including one 879MB file that GitHub's 100MB-per-file limit would hard-reject outright. DATASET_CARD.md's "Regeneration" section already has the exact commands to rebuild all of it locally, so nothing is lost — anyone cloning the repo just re-runs Phase 0.
+A small learned policy chooses filters and joins over a relational database, SQLite executes
+them, and a frozen LLM reader answers from the resulting sub-table. The policy is trained with
+behaviour cloning, then PPO / GRPO, using potential-based rewards derived from gold SQL.
+
+| Document | What it is |
+|---|---|
+| `Multi-Hop_Table_RL_Project_Report.pdf` | Problem, literature, MDP, rewards, metrics, algorithm arms |
+| `DESIGN.md` | Architecture: modules, interfaces, data model, storage |
+| `PLAN.md` | Build order (phases P0–P10) with a gate per phase |
+| `data/DATASET_CARD.md` | Data provenance and gate numbers |
+
+## Setup
+
+```bash
+python -m venv .venv
+.venv/Scripts/activate          # Windows; source .venv/bin/activate elsewhere
+pip install -e ".[dev]"
+pytest
+```
+
+All data lives in private HuggingFace repos (`DESIGN.md` §4); set `HF_TOKEN` to access them.
+Raw sources are mirrored by `notebooks/source_data.py` (molab); nothing large is stored in git.

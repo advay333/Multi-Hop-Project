@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mhtable"
+version = "0.1.0"
+description = "Learning multi-hop table reasoning through RL: PPO/GRPO entity selection over relational databases"
+readme = "DESIGN.md"
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub>=0.30",
+    "pyyaml>=6.0",
+    "sqlglot>=25.0",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+    "ijson>=3.3",
+    "requests>=2.32",
+    "gdown>=5.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+notebook = ["marimo>=0.10"]
+# Added in later phases: torch (P5), sentence-transformers (P4), vllm (P4, molab only).
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: long-running tests", "network: needs HuggingFace access"]
+addopts = "-m 'not slow and not network'"

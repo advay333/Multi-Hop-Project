@@ -32,6 +32,14 @@ def test_analyse_sql_tiers():
     assert f["relaxed_reasons"] == [] and "like" in f["reasons"]  # fits relaxed only
 
 
+def test_join_closing_a_cycle_is_not_a_tree():
+    g = SchemaGraph.from_tables_json(SCHEMA_ENTRY)
+    sql = ("SELECT T1.Name FROM department AS T1 JOIN head AS T3 ON T1.Department_ID = T3.head_ID "
+           "JOIN management AS T2 ON T1.Department_ID = T2.department_ID AND T3.head_ID = T2.head_ID")
+    f, _ = analyse_sql(sql, g)
+    assert "join_graph_not_tree" in f["relaxed_reasons"]
+
+
 def test_run_and_timeout(dept_db):
     con = connect_ro(dept_db)
     assert run(con, "SELECT count(*) FROM head") == [(2,)]

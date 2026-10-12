@@ -121,6 +121,51 @@ def analyse_sql(sql: str, schema: SchemaGraph | None, horizon: int = 5):
         if pairs:
             edges.append(pairs)
 
+    def literal_value(e):
+        """Python value of a literal node: str / int / float / None."""
+        e = _unwrap(e)
+        if isinstance(e, exp.Neg):
+            v = literal_value(e.this)
+            return -v if isinstance(v, (int, float)) else v
+        if isinstance(e, exp.Null):
+            return None
+        if isinstance(e, exp.Boolean):
+            return 1 if e.this else 0
+        if isinstance(e, exp.Column):  # Spider's double-quoted string literal
+            return e.name
+        if e.is_string:
+            return e.this
+        try:
+            return int(e.this)
+        except ValueError:
+            return float(e.this)
+
+    def add_anchor(col, op, value_nodes, relaxed_reason=None):
+        """Record `col op literal(s)`; `relaxed_reason` marks ops outside the strict tier."""
+        if not all(is_literal(v) for v in value_nodes):
+            hard.append("func_or_expr_predicate")
+            return
+        anchors.append((resolve(_unwrap(col)), op, tuple(literal_value(v) for v in value_nodes)))
+        if relaxed_reason:
+            relaxed_only.append(relaxed_reason)
+
+    def add_special(node, negated):
+        """LIKE / IN / BETWEEN / IS anchors (relaxed tier only)."""
+        name = type(node).__name__.lower()
+        op = ("not_" if negated else "") + name
+        if isinstance(node, exp.In):
+            if node.args.get("query") is not None:
+                hard.append("subquery")
+                return
+            values = node.expressions
+        elif isinstance(node, exp.Between):
+            values = [node.args["low"], node.args["high"]]
+        elif isinstance(node, exp.Is):
+            values = [] if isinstance(_unwrap(node.expression), exp.Null) else [node.expression]
+        else:  # Like / ILike
+            values = [node.expression]
+        add_anchor(node.this, op, values, relaxed_reason=op)
+
     # --- WHERE predicates (column-column equalities across tables count as joins)
     anchors, relaxed_only = [], []
     where = ast.args.get("where")
@@ -137,27 +182,19 @@ def analyse_sql(sql: str, schema: SchemaGraph | None, horizon: int = 5):
                     else:
                         hard.append("col_col_compare")
                     continue
-                if is_col(r) and is_literal(l):
+                op = STRICT_OPS.get(type(c)) or RELAXED_CMP[type(c)]
+                if is_col(r) and is_literal(l):  # 5 < col  ->  col > 5
                     l, r = r, l
+                    op = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(op, op)
                 if is_col(l) and is_literal(r):
-                    anchors.append((resolve(l), STRICT_OPS.get(type(c)) or RELAXED_CMP[type(c)]))
-                    if type(c) in RELAXED_CMP:
-                        relaxed_only.append("op_" + RELAXED_CMP[type(c)])
+                    add_anchor(l, op, [r], relaxed_reason=("op_" + op) if type(c) in RELAXED_CMP else None)
                 else:
                     hard.append("func_or_expr_predicate")
-            elif isinstance(c, (exp.Like, exp.ILike, exp.In, exp.Between, exp.Is)):
-                if is_col(c.this):
-                    anchors.append((resolve(_unwrap(c.this)), type(c).__name__.lower()))
-                    relaxed_only.append(type(c).__name__.lower())
-                else:
-                    hard.append("func_or_expr_predicate")
-            elif isinstance(c, exp.Not):
-                inner = _unwrap(c.this)
-                if isinstance(inner, (exp.Like, exp.In, exp.Is)) and is_col(inner.this):
-                    anchors.append((resolve(_unwrap(inner.this)), "not_" + type(inner).__name__.lower()))
-                    relaxed_only.append("not_" + type(inner).__name__.lower())
-                else:
-                    hard.append("func_or_expr_predicate")
+            elif isinstance(c, (exp.Like, exp.ILike, exp.In, exp.Between, exp.Is)) and is_col(c.this):
+                add_special(c, negated=False)
+            elif (isinstance(c, exp.Not) and isinstance(_unwrap(c.this), (exp.Like, exp.In, exp.Is))
+                  and is_col(_unwrap(c.this).this)):
+                add_special(_unwrap(c.this), negated=True)
             else:
                 hard.append("func_or_expr_predicate")
     if ast.args.get("having"):
@@ -165,12 +202,16 @@ def analyse_sql(sql: str, schema: SchemaGraph | None, horizon: int = 5):
 
     out["n_joins"] = len(edges)
     out["n_anchors"] = len(anchors)
-    out["anchors"] = anchors
-    out["edges"] = edges
+    out["anchors"] = anchors  # [((table, col), op, (literal values...)), ...]
+    out["edges"] = edges  # [[((t1, c1), (t2, c2)), ...], ...] one list of column pairs per join
+    out["tables"] = tab_list  # in FROM/JOIN order
 
     if len(edges) == 0:
         hard.append("no_join")
     if len(edges) != len(set(tab_list)) - 1 and "self_join" not in hard and edges:
+        hard.append("join_graph_not_tree")
+    # One ON clause linking the new table to two earlier ones closes a cycle: not one join step.
+    if any(len({c[0] for p in e for c in p if c}) != 2 for e in edges):
         hard.append("join_graph_not_tree")
     if any(None in p for e in edges for p in e) or any(a[0] is None for a in anchors):
         hard.append("unresolved_column")

@@ -134,6 +134,46 @@ Split (database-disjoint; relaxed-tier counts):
 | dev | 225 | 234 |
 | test | 711 | 667 |
 
+BIRD family (`--family bird`, molab build, tag `data-v1`):
+
+| Source | Questions | DBs | Executes non-empty | Strict | Relaxed | Relaxed by category |
+|---|---|---|---|---|---|---|
+| BIRD (train + dev) | 10,962 | 80 | 9,845 | 3,866 | 6,049 | Select 1,872 / List 1,719 / Count 1,643 / Numerical 815 |
+
+Relaxed-tier split: train 5,179, bird_dev 870. Main exclusions: no join 2,859, undeclared-FK
+join (strict only) 2,279, function in a filter 936, subquery 840; 350 gold queries error, 53 time
+out (30 s), 337 return nothing, 377 return more than 1,000 rows. Note BIRD's strict-tier count
+drops sharply because many of its joins are not declared foreign keys in `train_tables.json`.
+
+**Total relaxed-tier training pool (data-v1, before the oracle): 8,624** (Spider 2,179 + MMQA 1,266 + BIRD 5,179).
+
+### Oracle (P2, local spider_mmqa build 2026-10-12; becomes data-v2)
+
+Eligible = fits the tier structurally and the gold SQL returns a non-empty answer.
+
+| Source | Tier | Eligible | Oracle passes | Rate | Failures |
+|---|---|---|---|---|---|
+| Spider | strict | 2,711 | 2,704 | 99.7% | join on two non-unique columns: 7 |
+| Spider | relaxed | 3,113 | 3,066 | 98.5% | join on two non-unique columns: 47 |
+| MMQA | strict | 1,657 | 1,647 | 99.4% | join on two non-unique columns: 10 |
+| MMQA | relaxed | 2,165 | 2,117 | 97.8% | join on two non-unique columns: 48 |
+| BIRD | both | — | — | — | pending molab build |
+
+No reconstruction mismatches: replaying every parsed gold plan reproduces exactly the rows of
+the gold query's FROM/JOIN/WHERE. 4 queries whose single ON clause links three tables (a cycle)
+are now rejected structurally as `join_graph_not_tree`.
+
+Relaxed-tier canonical trajectories (Spider+MMQA): 3 actions 3,005 / 4 actions 1,576 /
+5 actions 602 (STOP included); 65% start with ANCHOR, 35% with SEED.
+
+Post-oracle split (strict / relaxed):
+
+| Split | Spider strict | Spider relaxed | MMQA strict | MMQA relaxed |
+|---|---|---|---|---|
+| train | 1,842 | 2,132 | 935 | 1,220 |
+| dev | 214 | 225 | 180 | 234 |
+| test | 648 | 709 | 532 | 663 |
+
 **MMQA data quality (see `DESIGN.md` §11):**
 - MMQA's shipped answers vs executing its own gold SQL (3,114 questions whose SQL runs; a
   question counts as agreeing when every SQL result value appears in the shipped text):

@@ -88,7 +88,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - **Gate:** `pip install -e .` and `pytest` pass on the laptop and in a molab notebook;
   `storage.fetch` retrieves a raw file on both.
 
-### P1 — Data layer (molab builds; laptop dev runs; all output to HF) — code done 2026-10-11
+### P1 — Data layer (molab builds; laptop dev runs; all output to HF) — DONE 2026-10-12 (`data-v1`)
 - `norm_value`, `SchemaGraph`, `sqlshape` (tier analysis), loaders for Spider / MMQA / BIRD
   producing a public `Instance` and a separate `GoldRecord` (`DESIGN.md` §5).
 - MMQA: 659 SQLite files (one per schema; contents verified identical), mojibake repaired,
@@ -98,14 +98,22 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - `notebooks/build_data.py` runs `python -m mhtable.data.build --family {spider_mmqa,bird} --push`.
 - Local full Spider+MMQA build (not pushed): 2.5 min; relaxed-tier usable questions —
   train 2,179 Spider + 1,266 MMQA; dev 225 + 234; test 711 + 667 (`data/DATASET_CARD.md`).
-- **Gate:** official builds pushed from molab and tagged `data-v1`; split disjointness asserted
-  (in `split.assign`); every instance's gold answer comes from executing its gold SQL.
+- BIRD build: 10,962 questions over 80 DBs; relaxed-tier usable — train 5,179, bird_dev 870.
+- **Gate (passed):** both families pushed from molab and tagged `data-v1` (964 files, 32 GB);
+  molab Spider+MMQA stats identical to the local build; splits instance-disjoint; 20 random gold
+  queries re-execute to their stored answers from the uploaded DBs.
 
-### P2 — Oracle (laptop)
-- Parse gold SQL → gold join edges and anchor predicates (`G*`); execute prefixes →
-  per-hop gold entity sets; canonical BC trajectory (anchors first, BFS joins, STOP).
-- Four asserted checks from report C.5; failures dropped and counted, never repaired.
-- **Gate:** oracle passes on ≥95% of `relaxed_ok` instances; failure reasons tabulated.
+### P2 — Oracle (runs inside the data build) — code done 2026-10-12; BIRD + push pending
+- `oracle.py`: gold structure (tables, edges, anchors with literal values, monotone flag),
+  canonical BC trajectory (selectivity-aware start, BFS joins, anchors after their table's
+  JOIN), per-step entity sets (row count + capped rowids), Jaccard potential Φ.
+- `sqlrender.py`: state -> SQL, shared with the P3 environment.
+- Checks: reconstruction (replayed plan == gold FROM/JOIN/WHERE rows), join uniqueness,
+  timeouts/errors. Both tiers tracked: `stats/<family>.json` -> `oracle.{strict,relaxed}`.
+- Local Spider+MMQA result: pass rate strict 99.7% / 99.4%, relaxed 98.5% / 97.8%; zero
+  reconstruction mismatches; all failures are `join_not_key`.
+- **Gate:** oracle passes ≥95% of eligible questions in each tier — passed for Spider and MMQA;
+  BIRD pending its molab build. Then push both families as `data-v2`.
 
 ### P3 — Environment (laptop)
 - Actions SEED / ANCHOR / JOIN / STOP; `tier` switch; masking rules (report C.3); H = 5.

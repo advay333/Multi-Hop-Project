@@ -8,10 +8,10 @@ Build the `data` HF repo from the `raw` one (PLAN.md P1, DESIGN.md §4.1).
 Families are built independently because their databases never overlap: Spider and MMQA must
 be split together (MMQA reuses Spider databases), BIRD is separate.
 
-For every question: execute the gold SQL on its database (answer = normalised rows), analyse
-the SQL against the action set (strict / relaxed tier flags, question category), and write a
-public `Instance` plus a separate `GoldRecord`. Gold edges, anchors and per-hop entity sets are
-added by the oracle in P2.
+For every question: analyse the SQL against the action set (strict / relaxed, category),
+execute it on its database (answer = normalised rows), and run the oracle (gold structure,
+canonical trajectory, per-hop entity sets, validity checks). Writes a public `Instance` plus a
+separate `GoldRecord`. Stats report oracle pass rates for both tiers.
 
 Output layout (mirrors the repo):
     instances/<source>.jsonl   gold/<source>.jsonl   schemas/<source>.json
@@ -38,7 +38,8 @@ from mhtable.data.loaders import RawExample, SourceBundle
 from mhtable.data.norm import norm_row, norm_value
 from mhtable.data.raw import RawSource
 from mhtable.data.schema import SchemaGraph
-from mhtable.data.sqlshape import analyse_sql
+from mhtable.oracle import parse as parse_gold
+from mhtable.oracle import run_oracle
 from mhtable.types import GoldRecord, Instance
 
 FAMILIES = {"spider_mmqa": ("spider", "mmqa"), "bird": ("bird",)}
@@ -48,12 +49,17 @@ ANSWER_ROW_CAP = 1000  # gold answers longer than this are flagged, not stored i
 # ---------------------------------------------------------------- per-question processing
 def process_db(db_file: Path, schema: SchemaGraph, examples: list[RawExample], horizon: int,
                timeout_s: float) -> list[tuple[Instance, GoldRecord, dict]]:
-    """Process every question of one database (one worker task)."""
+    """Process every question of one database (one worker task).
+
+    Steps per question: structural analysis -> execute gold SQL -> (if it fits the relaxed tier
+    and has a non-empty answer) oracle. A question is in a tier only if all three pass.
+    """
     out = []
     con = connect_ro(db_file)
+    unique_cache: dict = {}  # column uniqueness, shared by all questions on this DB
     try:
         for ex in examples:
-            feats, _ = analyse_sql(ex.sql, schema, horizon)
+            parsed, feats = parse_gold(ex.sql, schema, horizon)
             exec_reasons, answer = [], []
             try:
                 rows = run(con, ex.sql, timeout_s, ANSWER_ROW_CAP + 1)
@@ -67,17 +73,32 @@ def process_db(db_file: Path, schema: SchemaGraph, examples: list[RawExample], h
             except Exception:
                 exec_reasons.append("exec_error")
 
+            gold = GoldRecord(instance_id=ex.instance_id, gold_sql=ex.sql, gold_answer=answer,
+                              reference_answer=ex.extra.get("answer_text"))
+            oracle_reasons = []
+            if parsed is not None and not exec_reasons:
+                res = run_oracle(parsed, schema, con, timeout_s, unique_cache)
+                oracle_reasons = res.fail_reasons
+                gold.gold_tables, gold.gold_edges, gold.gold_anchors = parsed.tables, parsed.edges, parsed.anchors
+                gold.monotone = parsed.monotone
+                gold.gold_trajectory, gold.gold_entity_sets = res.trajectory, res.entity_sets
+            gold.fail_reasons = sorted(set(feats["reasons"]) | set(exec_reasons) | set(oracle_reasons))
+
             inst = Instance(
                 instance_id=ex.instance_id, source=ex.source, db_ref=ex.db_ref, db_id=ex.db_id,
                 question=ex.question, evidence=ex.evidence, tables=schema.tables,
                 n_gold_tables=feats.get("n_tables", 0),
                 category=feats.get("category", ""),
-                tier={"strict": not feats["reasons"] and not exec_reasons,
-                      "relaxed": not feats["relaxed_reasons"] and not exec_reasons})
-            gold = GoldRecord(instance_id=ex.instance_id, gold_sql=ex.sql, gold_answer=answer,
-                              fail_reasons=sorted(set(feats["reasons"]) | set(exec_reasons)),
-                              reference_answer=ex.extra.get("answer_text"))
-            audit = {"exec": exec_reasons[0] if exec_reasons else "ok"}
+                tier={"strict": not (feats["reasons"] or exec_reasons or oracle_reasons),
+                      "relaxed": not (feats["relaxed_reasons"] or exec_reasons or oracle_reasons)})
+            audit = {
+                "exec": exec_reasons[0] if exec_reasons else "ok",
+                # tier membership before the oracle, so oracle pass rates can be computed per tier
+                "pre_oracle": {"strict": not feats["reasons"] and not exec_reasons,
+                               "relaxed": not feats["relaxed_reasons"] and not exec_reasons},
+                "oracle": oracle_reasons,
+                "hops": sum(a.kind == "JOIN" for a in gold.gold_trajectory),
+            }
             if "answer_text" in ex.extra:  # MMQA ships an answer string: check our execution agrees
                 given = {norm_value(p) for p in str(ex.extra["answer_text"]).split(", ")}
                 audit["mmqa_answer_exact_set_match"] = given == {c for r in answer for c in r}
@@ -193,6 +214,16 @@ def _source_stats(results, b: SourceBundle) -> dict:
         "fail_reasons": dict(Counter(x for _, g, _ in results for x in g.fail_reasons).most_common(15)),
         **b.stats,
     }
+    s["oracle"] = {}
+    for tier in ("strict", "relaxed"):
+        eligible = [a for a in audits if a["pre_oracle"][tier]]
+        passed = [a for a in eligible if not a["oracle"]]
+        s["oracle"][tier] = {
+            "eligible": len(eligible), "passed": len(passed),
+            "pass_rate": round(len(passed) / len(eligible), 4) if eligible else None,
+            "fail_reasons": dict(Counter(r for a in eligible for r in a["oracle"])),
+            "passed_by_hops": dict(sorted(Counter(a["hops"] for a in passed).items())),
+        }
     match = [a["mmqa_answer_exact_set_match"] for a in audits if "mmqa_answer_exact_set_match" in a]
     if match:
         # Strict set equality with MMQA's shipped answer text; formatting alone causes most misses (DESIGN.md §11).
@@ -205,12 +236,13 @@ def _split_stats(bundles, inst_split, out: Path) -> dict:
     for source in bundles:
         for line in open(out / "instances" / f"{source}.jsonl", encoding="utf-8"):
             d = json.loads(line)
-            tiers[d["instance_id"]] = (source, d["tier"]["relaxed"])
+            tiers[d["instance_id"]] = (source, d["tier"])
     table = defaultdict(Counter)
     for iid, s in inst_split.items():
-        source, relaxed = tiers[iid]
+        source, tier = tiers[iid]
         table[s][f"{source}_all"] += 1
-        table[s][f"{source}_relaxed"] += relaxed
+        table[s][f"{source}_strict"] += tier["strict"]
+        table[s][f"{source}_relaxed"] += tier["relaxed"]
     return {s: dict(c) for s, c in sorted(table.items())}
 
 

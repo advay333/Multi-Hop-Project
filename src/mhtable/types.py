@@ -20,9 +20,27 @@ Edge = tuple[tuple[str, str], ...]
 
 @dataclass(frozen=True)
 class Anchor:
+    """A filter `column op value(s)`. Values are raw SQL literals (str / int / float / None), so
+    the filter can be re-executed exactly; compare anchors with `key()`, which normalises them."""
+
     column: str  # "head.born_state"
-    op: str  # "=", "<", ">", and in the relaxed tier: "<=", ">=", "!=", "like", "in", ...
-    value: str  # normalised with norm_value
+    op: str  # strict: "=", "<", ">"; relaxed adds "<=", ">=", "!=", "like", "not_like", "in",
+    #          "not_in", "between", "is" (IS NULL), "not_is" (IS NOT NULL)
+    values: tuple = ()  # one value for comparisons/LIKE, two for BETWEEN, n for IN, none for IS NULL
+
+    def key(self) -> tuple:
+        from mhtable.data.norm import norm_value
+
+        vals = tuple(norm_value(v) for v in self.values)
+        return (self.column.lower(), self.op, tuple(sorted(vals)) if self.op in ("in", "not_in") else vals)
+
+    @property
+    def table(self) -> str:
+        return self.column.split(".", 1)[0]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Anchor":
+        return cls(d["column"], d["op"], tuple(d.get("values", ())))
 
 
 ActionKind = Literal["SEED", "ANCHOR", "JOIN", "STOP"]
@@ -34,15 +52,28 @@ class Action:
     table: str | None = None  # SEED: the table; JOIN: the table being joined in
     anchor: Anchor | None = None
     edge: Edge | None = None
-    lookahead_rows: int = 0  # COUNT(*) of the result if taken; gold-free cardinality estimate
-    lookahead_tokens: int = 0
+    # Cardinality look-ahead: features, not identity — excluded from equality and hashing.
+    lookahead_rows: int = field(default=0, compare=False)  # COUNT(*) of the result if taken
+    lookahead_tokens: int = field(default=0, compare=False)
 
     @staticmethod
     def stop() -> "Action":
         return Action("STOP")
 
+    def key(self) -> tuple:
+        """Identity for matching an enumerated action against a gold one (values normalised)."""
+        return (self.kind, self.table, self.anchor.key() if self.anchor else None,
+                tuple(sorted(tuple(sorted(p)) for p in self.edge)) if self.edge else None)
 
-GOLD_FIELDS = frozenset({"gold_sql", "gold_answer", "gold_edges", "gold_anchors",
+    @classmethod
+    def from_dict(cls, d: dict) -> "Action":
+        return cls(kind=d["kind"], table=d.get("table"),
+                   anchor=Anchor.from_dict(d["anchor"]) if d.get("anchor") else None,
+                   edge=tuple(tuple(p) for p in d["edge"]) if d.get("edge") else None,
+                   lookahead_rows=d.get("lookahead_rows", 0), lookahead_tokens=d.get("lookahead_tokens", 0))
+
+
+GOLD_FIELDS = frozenset({"gold_sql", "gold_answer", "gold_edges", "gold_anchors", "gold_tables",
                          "gold_entity_sets", "gold_trajectory"})
 
 
@@ -76,10 +107,14 @@ class GoldRecord:
     instance_id: str
     gold_sql: str
     gold_answer: list[list[str]]  # rows from executing gold_sql, each cell normalised
+    gold_tables: list[str] = field(default_factory=list)  # tables of the gold query (lowercase)
     gold_edges: list[Edge] = field(default_factory=list)
     gold_anchors: list[Anchor] = field(default_factory=list)
-    gold_entity_sets: list[list[str]] = field(default_factory=list)  # correct keys after each gold prefix
+    # One entry per gold action except STOP: the intermediate relation after that action, as
+    # {"rows": |R_t|, "truncated": bool, "rowids": {table: [rowid, ...]}} (rowids capped).
+    gold_entity_sets: list[dict] = field(default_factory=list)
     gold_trajectory: list[Action] = field(default_factory=list)  # canonical sequence for BC
+    monotone: bool | None = None  # False if aggregation / ORDER BY..LIMIT / negation (report A.7)
     fail_reasons: list[str] = field(default_factory=list)  # why it is outside a tier
     reference_answer: str | None = None  # answer text shipped by the source (MMQA), kept for audit
 
@@ -88,21 +123,14 @@ class GoldRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "GoldRecord":
-        def edge(e):
-            return tuple(tuple(p) for p in e)
-
-        def action(a):
-            return Action(kind=a["kind"], table=a.get("table"),
-                          anchor=Anchor(**a["anchor"]) if a.get("anchor") else None,
-                          edge=edge(a["edge"]) if a.get("edge") else None,
-                          lookahead_rows=a.get("lookahead_rows", 0),
-                          lookahead_tokens=a.get("lookahead_tokens", 0))
-
-        return cls(instance_id=d["instance_id"], gold_sql=d["gold_sql"], gold_answer=[list(r) for r in d["gold_answer"]],
-                   gold_edges=[edge(e) for e in d.get("gold_edges", [])],
-                   gold_anchors=[Anchor(**a) for a in d.get("gold_anchors", [])],
-                   gold_entity_sets=[list(s) for s in d.get("gold_entity_sets", [])],
-                   gold_trajectory=[action(a) for a in d.get("gold_trajectory", [])],
+        return cls(instance_id=d["instance_id"], gold_sql=d["gold_sql"],
+                   gold_answer=[list(r) for r in d["gold_answer"]],
+                   gold_tables=list(d.get("gold_tables", [])),
+                   gold_edges=[tuple(tuple(p) for p in e) for e in d.get("gold_edges", [])],
+                   gold_anchors=[Anchor.from_dict(a) for a in d.get("gold_anchors", [])],
+                   gold_entity_sets=list(d.get("gold_entity_sets", [])),
+                   gold_trajectory=[Action.from_dict(a) for a in d.get("gold_trajectory", [])],
+                   monotone=d.get("monotone"),
                    fail_reasons=list(d.get("fail_reasons", [])),
                    reference_answer=d.get("reference_answer"))
 

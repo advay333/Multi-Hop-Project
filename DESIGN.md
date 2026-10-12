@@ -143,10 +143,12 @@ All records are plain JSON-serialisable dataclasses in `mhtable/types.py`.
 | `instance_id` | str | join key |
 | `gold_sql` | str | as released |
 | `gold_answer` | list[list[str]] | rows from executing `gold_sql`, each cell normalised with `norm_value` |
-| `gold_edges` | list[Edge] | join edges in the gold SQL (unordered column pairs) |
-| `gold_anchors` | list[Anchor] | filters `(table.column, op, normalised value)` |
-| `gold_entity_sets` | list[list[str]] | correct row keys after each prefix of the gold plan |
-| `gold_trajectory` | list[Action] | canonical action sequence for BC |
+| `gold_tables` | list[str] | tables of the gold query, FROM/JOIN order |
+| `gold_edges` | list[Edge] | join edges in the gold SQL (canonically ordered column pairs) |
+| `gold_anchors` | list[Anchor] | filters `(table.column, op, raw literal values)`; compared via `Anchor.key()` |
+| `gold_entity_sets` | list[dict] | after each gold action except STOP: `{"rows": n, "truncated": bool, "rowids": {table: [...]}}` (rowids capped at 2,000) |
+| `gold_trajectory` | list[Action] | canonical action sequence for BC, with look-ahead row counts |
+| `monotone` | bool | False for aggregation, ORDER BY…LIMIT, HAVING or negated filters (report A.7) |
 | `fail_reasons` | list[str] | why it is outside a tier (empty if it fits), incl. `empty_answer`, `exec_error`, `exec_timeout`, `answer_too_large` |
 | `reference_answer` | str \| None | answer text shipped by the source (MMQA only); kept because it often disagrees with executing the SQL (§11) |
 
@@ -157,7 +159,10 @@ Keeping gold in a separate file makes the firewall structural: code that only lo
 
 ```python
 Edge   = tuple[tuple[str, str], ...]          # ((t1.c1, t2.c2), ...) — composite keys allowed
-Anchor = (column: str, op: str, value: str)   # "head.born_state", "=", "alabama"
+Anchor = (column: str, op: str, values: tuple)  # "head.born_state", "=", ("Alabama",)
+#   values are raw SQL literals (re-executable); Anchor.key() normalises them for comparison.
+#   ops: strict "=", "<", ">"; relaxed adds "<=", ">=", "!=", "like", "not_like", "in", "not_in",
+#   "between" (2 values), "is"/"not_is" (IS [NOT] NULL, no values)
 
 @dataclass
 class Action:
@@ -166,7 +171,8 @@ class Action:
     anchor: Anchor | None
     edge: Edge | None
     lookahead_rows: int        # COUNT of the result if taken (cardinality estimate, gold-free)
-    lookahead_tokens: int
+    lookahead_tokens: int      # look-ahead fields are excluded from equality; Action.key() is
+                               # the normalised identity used to match enumerated vs gold actions
 
 @dataclass
 class State:
@@ -232,20 +238,32 @@ Demands: a YAML path. Outputs: a frozen `Config`, saved verbatim into every run.
 
 ### 6.3 Oracle
 
-**`oracle.py`** — the only code that reads gold SQL.
-Demands: `Instance`, `gold_sql`, `SchemaGraph`, DB path.
-Outputs: `GoldRecord` or a rejection reason.
+**`oracle.py`** — the only code that reads gold SQL. Called by the data build for every
+question that fits the relaxed tier and has a non-empty answer.
+Demands: `gold_sql`, `SchemaGraph`, an open read-only connection.
+Outputs: `ParsedGold` (tables, edges, anchors, monotone) and an `OracleResult`
+(trajectory, entity sets, failure reasons).
 
 ```python
-parse(gold_sql, schema) -> ParsedGold | Reject   # edges, anchors, reader-side ops, tier flags
-entity_sets(parsed, db) -> list[list[str]]        # execute FROM/JOIN/WHERE prefixes
-canonical_trajectory(parsed) -> list[Action]      # anchors first, BFS joins, STOP
-potential(state, gold) -> float                   # Jaccard(items taken, gold items); 0 at terminal
+parse(gold_sql, schema, horizon) -> (ParsedGold | None, features)   # None = outside relaxed tier
+run_oracle(parsed, schema, con) -> OracleResult                     # trajectory, entity sets, checks
+canonical_actions(parsed, start) -> list[Action]                    # see order below
+items(edges, anchors) -> frozenset                                  # structural items for Φ
+potential(taken, gold) -> float                                     # Jaccard; caller sets Φ(terminal)=0
 ```
 
-Asserted checks (failures dropped and counted): gold SQL reproduces the answer; gold joins
-satisfy the uniqueness rule (max(u_k, u_l) = 1); gold edges are in the candidate set; gold
-anchors are in the anchor candidates. The last two are reported as **coverage** (gate G-6).
+**Canonical order:** start at the anchored table whose own filters leave the fewest rows; apply
+its anchors; join remaining tables breadth-first, applying each new table's anchors right after
+its JOIN (ANCHOR is only legal on visited tables); STOP. No anchors → SEED the first FROM table.
+
+**Checks** (failures dropped and counted, never repaired): `oracle_reconstruct_mismatch` —
+replaying the parsed plan does not give exactly the rows of the gold query's own
+FROM/JOIN/WHERE; `join_not_key` — a gold join pairs two non-unique columns (JAR's
+max(u_k, u_l) = 1 rule); `oracle_timeout` / `oracle_error`. Edge- and anchor-candidate recall
+need the environment's candidate sets and are reported as **coverage** in P3 (gate G-6).
+
+**`sqlrender.py`** — renders a state (visited tables, joins, anchors) as SQL with original
+identifier spellings. Shared by the oracle and the environment so both define R_t identically.
 
 ### 6.4 Environment
 

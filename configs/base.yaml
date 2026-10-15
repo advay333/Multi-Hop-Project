@@ -10,8 +10,10 @@ data:
 env:
   horizon: 5
   budget_tokens: 4096
-  edges: inferred       # inferred | gold_fk
-  distractors_k: 0
+  tier: relaxed         # strict | relaxed (also selects which instances are used)
+  edges: inferred       # inferred | declared
+  edge_threshold: 0.6667  # min omega for inferred joins; keeps 98% of gold joins on train
+  episode_tables: all   # all tables of the database; "gold_plus_k" is a later ablation
 
 reader:
   name: mock

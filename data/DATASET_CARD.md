@@ -105,7 +105,7 @@ Full details and the exact record shape are documented at the top of
 | G-2 | Row counts (median/mean per table) | ❌ FAIL as motivation — MMQA mean 1,833 rows (2-table) but **median ~15**; 6% of tables exceed 800 rows; ~84–92% of instances fit 4,096 tokens whole. Reframed around join selection + BIRD long tail (`PLAN.md` §0). |
 | G-3 | Path yield | superseded — real questions used instead of enumerated paths |
 | G-4 / G-5 | Template coverage / round-trip pass rate | dropped — no synthetic generation |
-| G-6 | Oracle coverage | pending (P3) |
+| G-6 | Oracle coverage (gold trajectory inside the action space) | ✅ PASS on Spider+MMQA train — strict 89.6%, relaxed 85.1% (gate 85%); dev 87.8% / 82.5%. BIRD pending. Details below. |
 | G-7 | Leakage gap | pending (needs baselines, P6) |
 | — | Action-set fit | see "Build yields" below |
 | — | Category balance | see "Build yields" below |
@@ -173,6 +173,23 @@ Post-oracle split (strict / relaxed):
 | train | 1,842 | 2,132 | 935 | 1,220 |
 | dev | 214 | 225 | 180 | 234 |
 | test | 648 | 709 | 532 | 663 |
+
+### Environment coverage (P3, gate G-6; Spider+MMQA, data-v2, edge threshold 0.6667)
+
+Questions whose gold relation is empty (Spider's empty `scholar`/`yelp`/`academic`/`imdb`/
+`restaurants` databases etc.) are excluded: 139 strict / 203 relaxed train questions.
+
+| Split | Tier | Questions | Gold path fully offered | SEED | JOIN | ANCHOR |
+|---|---|---|---|---|---|---|
+| train | strict | 2,638 | **89.6%** | 98.6% | 97.7% | 90.2% |
+| train | relaxed | 3,149 | **85.1%** | 98.7% | 97.2% | 85.5% |
+| dev | strict | 394 | 87.8% | 100% | 100% | 84.8% |
+| dev | relaxed | 458 | 82.5% | 100% | 100% | 80.9% |
+
+Main reasons a gold action is not offered (relaxed train): number not recognised in the question
+121, value not matched to the question 116 (mostly meaning-level: "male" -> 'M', "European" ->
+continent 2), numeric column not among the top 3 103, LIKE pattern not generated 43, join outside
+the top 6 41, join below threshold 37, join not inferred 30.
 
 **MMQA data quality (see `DESIGN.md` §11):**
 - MMQA's shipped answers vs executing its own gold SQL (3,114 questions whose SQL runs; a

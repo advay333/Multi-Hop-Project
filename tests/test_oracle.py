@@ -96,3 +96,8 @@ def test_potential_is_jaccard_over_structural_items(schema):
     assert potential(wrong, gold) == pytest.approx(1 / 4)  # 1 shared of 4 in the union: a wrong item lowers Φ
     same_values_other_spelling = items(p.edges, [Anchor("HEAD.born_state", "=", ("alabama",))])
     assert potential(same_values_other_spelling, gold) == 1.0
+
+
+def test_empty_gold_relation_is_rejected(schema, dept_db):
+    p, _ = parse(JOIN3 + "WHERE T3.born_state = 'Texas'", schema)  # nobody was born in Texas
+    assert "gold_relation_empty" in run_oracle(p, schema, connect_ro(dept_db)).fail_reasons

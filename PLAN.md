@@ -103,7 +103,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   molab Spider+MMQA stats identical to the local build; splits instance-disjoint; 20 random gold
   queries re-execute to their stored answers from the uploaded DBs.
 
-### P2 — Oracle (runs inside the data build) — code done 2026-10-12; BIRD + push pending
+### P2 — Oracle (runs inside the data build) — DONE 2026-10-15 for Spider+MMQA (`data-v2`); BIRD gate waived, pending
 - `oracle.py`: gold structure (tables, edges, anchors with literal values, monotone flag),
   canonical BC trajectory (selectivity-aware start, BFS joins, anchors after their table's
   JOIN), per-step entity sets (row count + capped rowids), Jaccard potential Φ.
@@ -112,17 +112,23 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   timeouts/errors. Both tiers tracked: `stats/<family>.json` -> `oracle.{strict,relaxed}`.
 - Local Spider+MMQA result: pass rate strict 99.7% / 99.4%, relaxed 98.5% / 97.8%; zero
   reconstruction mismatches; all failures are `join_not_key`.
-- **Gate:** oracle passes ≥95% of eligible questions in each tier — passed for Spider and MMQA;
-  BIRD pending its molab build. Then push both families as `data-v2`.
+- **Gate:** oracle passes ≥95% of eligible questions in each tier — passed for Spider and MMQA
+  (`data-v2`, identical to the local run; 20 random trajectories replay to their stored counts).
+  **BIRD: 93.7% strict / 91.1% relaxed — accepted as-is for now, see §4a.**
 
-### P3 — Environment (laptop)
-- Actions SEED / ANCHOR / JOIN / STOP; `tier` switch; masking rules (report C.3); H = 5.
-- Look-ahead `COUNT` feature per candidate; transitions as composed SQL views.
-- Edge candidates: inferred (JAR ω) by default, `gold_fk` flag as ablation.
-- Distractor tables (k ≤ 3 from the same source DB) behind a flag.
-- Materialiser: projection rule + hard budget B (default 4,096), deterministic row order.
-- **Gates:** G-6 coverage (gold trajectory inside the action space) ≥ 85% on train;
-  a random policy runs 1,000 episodes with no crash; log |A(s)| and episode length.
+### P3 — Environment (laptop) — code done 2026-10-15; index push pending
+- `env/text.py`, `env/index.py`, `env/actions.py`, `env/env.py` (`DESIGN.md` §6.4);
+  `analysis/coverage.py` for G-6; `notebooks/build_index.py` builds and pushes `index/` on molab.
+- Inferred joins (JAR ω) by default, `edges: declared` as ablation; threshold ω ≥ 0.6667 keeps
+  98% of gold joins on train. Lexical similarity until the P4 encoder exists.
+- New oracle check `gold_relation_empty` (139 strict / 203 relaxed train questions on Spider's
+  empty `scholar`/`yelp`/`academic`/... databases); applied at load time until the next rebuild.
+- **Gates (Spider+MMQA train, data-v2):** G-6 reachability strict **89.6%** (2,364/2,638),
+  relaxed **85.1%** (2,679/3,149) — passed; dev: 87.8% / 82.5%. Random policy: 1,000 episodes
+  per tier, 0 crashes, |A(s)| mean 7–8, max 21; episode lengths 2–5.
+- Remaining misses are mostly semantic (e.g. "male" -> 'M', "European" -> continent 2) — the
+  P4 embedding scorer may recover some; they are reported, not forced.
+- BIRD: index + coverage pending (needs the BIRD DBs, molab).
 
 ### P4 — Readers, encoders, metrics (laptop + molab)
 - Reader interface with on-disk cache keyed by hash(reader, prompt). Implementations:
@@ -167,6 +173,20 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 2. Remaining baselines: prompted planner (B5), SQL-extract-then-read (B6).
 3. Robustness: header ablation, 2- vs 3-table, distractor sweep, BIRD-dev transfer.
 4. Transformer policy; reader comparison; budget sweep.
+
+## 4a. Pending before final training runs
+
+- **BIRD oracle gate (P2).** `data-v2` BIRD passes 91.1% relaxed / 93.7% strict (gate 95%).
+  Usable as-is: 4,654 relaxed train + 833 bird_dev questions with verified oracle labels.
+  Known causes and fixes, to apply and rebuild BIRD as `data-v3` before the final runs:
+  1. `join_not_key` (463): the uniqueness check tests composite-key joins column by column
+     (e.g. `tmID AND year`); test the column combination instead. The rest are genuine
+     many-to-many joins (e.g. `superstore`) and stay rejected.
+  2. LEFT JOINs (27, caught by the reconstruction check): reject structurally in `sqlshape`.
+  3. `WITHOUT ROWID` tables (33, all `language_corpus`): key entity sets on the primary key.
+  4. Timeouts (15): longer timeout for the oracle stage.
+- **Next data rebuild (`data-v3`)** also bakes in the P3 oracle check `gold_relation_empty`
+  (loaders apply it until then), and the BIRD index + G-6 coverage need a molab run.
 
 ## 4. Things we will measure early because they can change the plan
 

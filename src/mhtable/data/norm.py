@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 
 NULL = "<null>"
 FLOAT_DIGITS = 10
@@ -35,10 +35,12 @@ _WS = re.compile(r"\s+")
 def _canon_decimal(d: Decimal) -> str:
     if not d.is_finite():
         return str(d).lower()
-    if d == d.to_integral_value():
-        s = str(d.quantize(Decimal(1)))
-    else:
-        s = format(d.normalize(), "f")
+    with localcontext() as ctx:
+        ctx.prec = 400  # some cells hold >28-digit numbers; never round while canonicalising
+        if d == d.to_integral_value():
+            s = format(d.to_integral_value(), "f")
+        else:
+            s = format(d.normalize(), "f")
     return "0" if s in ("-0", "+0") else s
 
 

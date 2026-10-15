@@ -18,6 +18,9 @@ Checks (failures dropped and counted, never repaired):
                                gold query's FROM/JOIN/WHERE (i.e. parsing lost a condition)
   join_not_key                 a gold join pairs two non-unique columns (JAR's rule:
                                max(u_k, u_l) = 1), which creates spurious row pairings
+  gold_relation_empty          the gold FROM/JOIN/WHERE selects no rows (e.g. Spider's empty
+                               `scholar`/`yelp` tables): nothing to select, and a COUNT answer
+                               of 0 needs no evidence
   oracle_timeout / oracle_error / oracle_no_rowid
 Edge-candidate and anchor-candidate recall (report checks 3–4) need the environment's
 candidate sets and are measured in P3 (gate G-6).
@@ -213,6 +216,8 @@ def run_oracle(parsed: ParsedGold, schema: SchemaGraph, con: sqlite3.Connection,
             same = mine == orig
         if not same:
             res.fail_reasons.append("oracle_reconstruct_mismatch")
+        if res.entity_sets[-1]["rows"] == 0:
+            res.fail_reasons.append("gold_relation_empty")
 
         # Check: every gold join has a unique column on at least one side.
         for e in parsed.edges:

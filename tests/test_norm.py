@@ -32,3 +32,6 @@ def test_canonical_forms():
     assert norm_value("2012-13-05") == "2012-13-05"  # not a valid date: plain text
     assert norm_value(b"Abc") == "abc"
     assert norm_row([1, "X", None]) == ["1", "x", NULL]
+    big = "1" + "0" * 40
+    assert norm_value(big) == norm_value(big + ".0") == big  # beyond Decimal's default 28-digit precision
+    assert norm_value("1E+30") == "1" + "0" * 30

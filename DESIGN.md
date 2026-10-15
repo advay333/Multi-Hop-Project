@@ -259,7 +259,9 @@ its JOIN (ANCHOR is only legal on visited tables); STOP. No anchors → SEED the
 **Checks** (failures dropped and counted, never repaired): `oracle_reconstruct_mismatch` —
 replaying the parsed plan does not give exactly the rows of the gold query's own
 FROM/JOIN/WHERE; `join_not_key` — a gold join pairs two non-unique columns (JAR's
-max(u_k, u_l) = 1 rule); `oracle_timeout` / `oracle_error`. Edge- and anchor-candidate recall
+max(u_k, u_l) = 1 rule); `gold_relation_empty` — the gold FROM/JOIN/WHERE selects no rows
+(added in P3; data-v2 predates it, so loaders apply the same rule); `oracle_timeout` /
+`oracle_error`. Edge- and anchor-candidate recall
 need the environment's candidate sets and are reported as **coverage** in P3 (gate G-6).
 
 **`sqlrender.py`** — renders a state (visited tables, joins, anchors) as SQL with original
@@ -269,22 +271,41 @@ identifier spellings. Shared by the oracle and the environment so both define R_
 
 | Module | Demands | Outputs |
 |---|---|---|
-| `env/edges.py` | `SchemaGraph`, DB | candidate edges with features (name similarity e, value Jaccard j, uniqueness u, score ω); `source: inferred \| gold_fk` |
-| `env/cells.py` | DB | per-column distinct values (capped), ID-like columns excluded; `lookup(question) -> top-k (column, value)` |
-| `env/actions.py` | `State`, edge and cell indexes, `tier` | `list[Action]` + mask, following the report's masking rules (H = 5, ≤ 2 or 3 anchors, no re-joins, STOP only for t ≥ 1) |
-| `env/env.py` | DB path, indexes, config (`H`, `B`, `tier`, `distractors`) | `TableEnv` (below) |
+| `env/text.py` | strings | tokens (camel/snake split, stopwords dropped, plurals folded), numbers incl. number words/ordinals, ISO dates, quoted phrases, operator cues; `Similarity` interface with `LexicalSimilarity` (the P4 embedding scorer implements the same interface) |
+| `env/index.py` | `SchemaGraph`, DB | `DbIndex` per database, stored as `index/<db_ref>.json`: column stats (rows, distinct, uniqueness u, numeric, min/max, avg length); candidate joins with JAR features (e name similarity, j value containment, u, ω = (e + j)·max u, halved for id-to-id pairs); cell index (≤10,000 most frequent values per non-ID column). `CellSearch.lookup(text)` → top (column, value, score) |
+| `env/actions.py` | `State`, `EpisodeContext`, `ActionConfig` (tier, edges mode, threshold, caps) | legal candidate actions under the masking rules |
+| `env/env.py` | `EnvConfig`, `EnvData` (local repo copy or HF) | `TableEnv` (below) |
 
 ```python
 class TableEnv:
-    def reset(self, inst: Instance) -> State
-    def candidate_actions(self, s: State) -> tuple[list[Action], Tensor]   # actions, mask
-    def step(self, s: State, a: Action) -> tuple[State, bool]              # next state, done
-    def materialise(self, s: State, budget: int) -> tuple[str, int]        # markdown sub-table, tokens
+    def reset(self, inst: Instance, tables: list[str] | None = None) -> State
+    def candidate_actions(self, s: State) -> list[Action]   # only legal actions; each with look-ahead
+    def step(self, s: State, a: Action) -> tuple[State, bool]   # next state, done
+    def materialise(self, s: State, budget: int | None = None) -> Materialised  # text, tokens, rows, overflow
 ```
 
-`materialise` projects onto join keys, anchor columns, and the top-4 columns of visited tables
-by schema similarity to the question; row order is deterministic; output is hard-truncated at
-B tokens (with an overflow flag). The environment never imports `oracle` or reads `gold/`.
+**Masking** (illegal actions are never offered): t = 0 → SEED or ANCHOR (an anchor seeds its
+table); t ≥ 1 → ANCHOR on visited tables (≤ 2 strict, ≤ 3 relaxed, no duplicates), JOIN to an
+unvisited episode table, STOP; t = H − 1 → STOP only. Caps: ≤ 6 SEED, ≤ 14 ANCHOR, ≤ 6 JOIN.
+
+**Anchor candidates** come from the question (+ BIRD evidence) and the database only:
+categorical `=` from cell-index matches (exact phrase, token and 5-letter-prefix matching);
+numbers/number words × the 3 most plausible numeric columns (value range contains the number,
+then name similarity) × operators (=, <, > always; ≤, ≥, ≠ when the wording cues them); dates
+and years against date-like text columns; relaxed adds BETWEEN, IN, ≠ on matched values under
+negation, LIKE for quoted phrases / "the letter x" / partial matches.
+
+**Look-ahead:** every candidate carries the capped COUNT(*) of the relation it leads to and an
+estimated token count — cardinality estimation, not gold information.
+
+`materialise` projects onto join keys, anchor columns and the top-4 question-relevant columns
+of the visited tables, orders rows deterministically by rowid, and cuts rows to fit B tokens
+(`overflow` flag). Token counts are estimated (3.5 chars/token) until the reader's tokenizer is
+plugged in (P4). The environment never imports the oracle or reads `gold/` (enforced by a test).
+
+**Coverage analysis** (`analysis/coverage.py`, gold-aware, outside the environment) follows each
+gold trajectory through the environment and reports gate G-6, per-step coverage, reasons for
+misses, the edge threshold for 98% gold-join recall, and random-policy smoke tests.
 
 ### 6.5 Models
 

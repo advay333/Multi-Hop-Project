@@ -130,3 +130,54 @@ def test_env_never_touches_gold():
         assert not any("oracle" in m or m.endswith("GoldRecord") for m in imported), f.name
         strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
         assert not any(s.startswith("gold/") or "/gold/" in s for s in strings), f.name
+
+
+def test_same_name_text_columns_are_join_candidates(tmp_path):
+    # student_loan-style: person tables linked only by a column called `name` (a stopword).
+    import sqlite3
+    db = tmp_path / "loan.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE person (name TEXT PRIMARY KEY)")
+    con.execute("CREATE TABLE disabled (name TEXT)")
+    con.executemany("INSERT INTO person VALUES (?)", [(f"student{i}",) for i in range(20)])
+    con.executemany("INSERT INTO disabled VALUES (?)", [(f"student{i}",) for i in range(0, 20, 3)])
+    con.commit()
+    con.close()
+    idx = build_db_index("loan", db, SchemaGraph.from_sqlite("loan", db))
+    edges = {e.edge: e.omega for e in idx.edges}
+    assert edges[make_edge("disabled.name", "person.name")] >= 0.6667
+
+
+def test_evidence_filter_and_composite_join_are_offered(tmp_path):
+    import sqlite3
+    db = tmp_path / "hockey.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE teams (tmID TEXT, year INTEGER, name TEXT, PRIMARY KEY (tmID, year))")
+    con.execute("CREATE TABLE coaches (coachID TEXT, tmID TEXT, year INTEGER, won INTEGER, "
+                "FOREIGN KEY (tmID, year) REFERENCES teams (tmID, year))")
+    con.executemany("INSERT INTO teams VALUES (?, ?, ?)", [("BOS", y, "Bruins") for y in range(1990, 2000)])
+    con.executemany("INSERT INTO coaches VALUES (?, ?, ?, ?)", [(f"c{y}", "BOS", y, y % 50) for y in range(1990, 2000)])
+    con.commit()
+    con.close()
+    root = tmp_path / "data"
+    ref = "bird/hockey"
+    schema = SchemaGraph.from_sqlite("hockey", db)
+    (root / "schemas").mkdir(parents=True)
+    (root / "schemas" / "bird.json").write_text(json.dumps({ref: schema.to_dict()}))
+    (root / "db" / "bird").mkdir(parents=True)
+    shutil.copy(db, root / "db" / f"{ref}.sqlite")
+    (root / "index" / "bird").mkdir(parents=True)
+    (root / "index" / f"{ref}.json").write_text(json.dumps(build_db_index(ref, db, schema).to_dict(), default=str))
+    inst = Instance("bird:hockey:0", "bird", ref, "hockey", "Which coach won most for the Bruins?",
+                    evidence="refers to won > 40; year BETWEEN 1992 AND 1995", tables=["teams", "coaches"])
+    env = TableEnv(EnvConfig(actions=ActionConfig(tier="relaxed")), EnvData(root))
+    s = env.reset(inst)
+    first = env.candidate_actions(s)
+    keys = {a.key() for a in first}
+    assert Action("ANCHOR", "coaches", anchor=Anchor("coaches.won", ">", (40,))).key() in keys
+    assert len(first) <= 25
+    s, _ = env.step(s, next(a for a in first if a.kind == "SEED" and a.table == "coaches"))
+    composite = tuple(sorted([make_edge("coaches.tmid", "teams.tmid")[0], make_edge("coaches.year", "teams.year")[0]]))
+    later = env.candidate_actions(s)
+    assert any(a.kind == "JOIN" and a.edge == composite for a in later)
+    assert len(later) <= 25

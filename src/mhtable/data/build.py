@@ -48,7 +48,7 @@ ANSWER_ROW_CAP = 1000  # gold answers longer than this are flagged, not stored i
 
 # ---------------------------------------------------------------- per-question processing
 def process_db(db_file: Path, schema: SchemaGraph, examples: list[RawExample], horizon: int,
-               timeout_s: float) -> list[tuple[Instance, GoldRecord, dict]]:
+               timeout_s: float, oracle_timeout_s: float | None = None) -> list[tuple[Instance, GoldRecord, dict]]:
     """Process every question of one database (one worker task).
 
     Steps per question: structural analysis -> execute gold SQL -> (if it fits the relaxed tier
@@ -77,8 +77,12 @@ def process_db(db_file: Path, schema: SchemaGraph, examples: list[RawExample], h
                               reference_answer=ex.extra.get("answer_text"))
             oracle_reasons = []
             if parsed is not None and not exec_reasons:
-                res = run_oracle(parsed, schema, con, timeout_s, unique_cache)
-                oracle_reasons = res.fail_reasons
+                res = run_oracle(parsed, schema, con, oracle_timeout_s or timeout_s, unique_cache)
+                oracle_reasons = [r for r in res.fail_reasons if r != "gold_relation_empty"]
+                if "gold_relation_empty" in res.fail_reasons:
+                    # A property of the data (nothing to select), like an empty answer: it makes the
+                    # question ineligible rather than counting against the oracle's pass rate.
+                    exec_reasons.append("gold_relation_empty")
                 gold.gold_tables, gold.gold_edges, gold.gold_anchors = parsed.tables, parsed.edges, parsed.anchors
                 gold.monotone = parsed.monotone
                 gold.gold_trajectory, gold.gold_entity_sets = res.trajectory, res.entity_sets
@@ -108,11 +112,12 @@ def process_db(db_file: Path, schema: SchemaGraph, examples: list[RawExample], h
     return out
 
 
-def process_bundle(b: SourceBundle, horizon: int, timeout_s: float, workers: int):
+def process_bundle(b: SourceBundle, horizon: int, timeout_s: float, workers: int,
+                   oracle_timeout_s: float | None = None):
     by_db: dict[str, list[RawExample]] = defaultdict(list)
     for ex in b.examples:
         by_db[ex.db_ref].append(ex)
-    tasks = [(b.db_files[ref], b.schemas[ref], exs, horizon, timeout_s) for ref, exs in by_db.items()]
+    tasks = [(b.db_files[ref], b.schemas[ref], exs, horizon, timeout_s, oracle_timeout_s) for ref, exs in by_db.items()]
     results = []
     t0 = time.time()
     if workers <= 1:
@@ -160,7 +165,7 @@ def _place_db(src: Path, dest: Path) -> None:
 
 # ---------------------------------------------------------------- main
 def build(family: str, out: Path, raw: RawSource, limit: int | None = None, horizon: int = 5,
-          timeout_s: float = 30.0, workers: int = 1, seed: int = 0) -> dict:
+          timeout_s: float = 30.0, workers: int = 1, seed: int = 0, oracle_timeout_s: float = 120.0) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     bundles = load_family(family, raw, out, limit)
 
@@ -168,7 +173,7 @@ def build(family: str, out: Path, raw: RawSource, limit: int | None = None, hori
     stats: dict = {"family": family, "limit": limit, "horizon": horizon, "sources": {}}
     for source, b in bundles.items():
         print(f"[{source}] {len(b.examples)} questions over {len(b.db_files)} databases", flush=True)
-        results = process_bundle(b, horizon, timeout_s, workers)
+        results = process_bundle(b, horizon, timeout_s, workers, oracle_timeout_s)
         used = {inst.db_ref for inst, _, _ in results}
         for ref in used:
             _place_db(b.db_files[ref], out / "db" / f"{ref}.sqlite")
@@ -255,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=None, help="dev only: first N questions per file")
     p.add_argument("--horizon", type=int, default=5)
     p.add_argument("--timeout", type=float, default=30.0, help="seconds per gold query")
+    p.add_argument("--oracle-timeout", type=float, default=120.0,
+                   help="seconds per oracle query (replays several joins per question; BIRD tables are large)")
     p.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--push", action="store_true", help="upload the output folder to the data repo")
@@ -265,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--push is only allowed for full builds from the HF raw repo (no --raw-local / --limit)")
 
     stats = build(args.family, args.out, RawSource(args.raw_revision, args.raw_local), args.limit,
-                  args.horizon, args.timeout, args.workers, args.seed)
+                  args.horizon, args.timeout, args.workers, args.seed, args.oracle_timeout)
     print(json.dumps(stats, indent=2))
 
     if args.push:

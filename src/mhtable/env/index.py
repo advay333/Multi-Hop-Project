@@ -38,6 +38,7 @@ VALUES_PER_COLUMN = 10000  # most frequent distinct values indexed per column (T
 MAX_VALUE_CHARS = 100  # longer texts are not anchor candidates
 CONTAINMENT_SAMPLE = 200  # distinct values sampled from the non-unique side
 MIN_NAME_SIM = 0.25  # pairs below this name similarity are only kept if declared FKs
+SAME_NAME_SIM = 0.5  # name similarity credited to identically named text columns
 STAT_TIMEOUT_S = 20.0
 
 
@@ -168,6 +169,11 @@ def infer_edges(con, schema: SchemaGraph, stats: dict[str, ColumnStats]) -> list
             edge = make_edge(k.key, c.key)
             declared = edge in schema.fks
             e = edge_name_similarity(kt, kc, ct, cc)
+            if kc == cc and not (k.numeric and c.numeric):
+                # Identically named text columns (BIRD student_loan: disabled.name ~ unemployed.name).
+                # "name" is a stopword, so the token similarity above is 0 for them. Integer ids are
+                # left out: their values overlap by coincidence.
+                e = max(e, SAME_NAME_SIM)
             if e < MIN_NAME_SIM and not declared:
                 continue
             if c.unique and c.key < k.key and any(x.edge == edge for x in out):

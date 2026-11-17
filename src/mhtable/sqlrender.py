@@ -79,6 +79,16 @@ def from_where(schema: SchemaGraph, tables: list[str], joins: list[Edge], anchor
     return sql
 
 
-def rowid_select(schema: SchemaGraph, tables: list[str]) -> str:
-    """Select one rowid per table, in sorted table order (identifies each row of R_t)."""
-    return ", ".join(f"{table_sql(schema, t)}.rowid" for t in sorted(tables))
+def row_key_sql(schema: SchemaGraph, table: str, no_rowid: dict | None = None, alias: str | None = None) -> str:
+    """Expression identifying one row of `table`: its rowid, or, for a WITHOUT ROWID table
+    (listed in `no_rowid` as table -> primary-key column names), its primary key as a JSON array."""
+    ref = quote(alias) if alias else table_sql(schema, table)
+    pk = (no_rowid or {}).get(table.lower())
+    if pk:
+        return f"json_array({', '.join(f'{ref}.{quote(c)}' for c in pk)})"
+    return f"{ref}.rowid"
+
+
+def rowid_select(schema: SchemaGraph, tables: list[str], no_rowid: dict | None = None) -> str:
+    """Select one row key per table, in sorted table order (identifies each row of R_t)."""
+    return ", ".join(row_key_sql(schema, t, no_rowid) for t in sorted(tables))

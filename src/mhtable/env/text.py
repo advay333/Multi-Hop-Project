@@ -23,6 +23,7 @@ then there their they them all any each list show give find name names number co
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SPLIT = re.compile(r"[^0-9a-z]+")
 _NUM = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?(?!\w|\.\d)")  # a sentence-final "." is fine
+_GLUED_ID = re.compile(r"(?i)\b(?:id|no|#)\.?(\d+)(?!\w|\.\d)")  # "ID12882", "no.14"
 
 
 def _stem(t: str) -> str:
@@ -49,6 +50,19 @@ def plain(s: str) -> str:
 
 DATE_LIT = re.compile(r"\b(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?)\b")
 LETTER = re.compile(r"\bletters?\s+['\"]?([a-zA-Z])['\"]?(?![\w'])")
+
+
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    "january february march april may june july august september october november december".split())}
+_MONTH_YEAR = re.compile(r"\b(" + "|".join(_MONTHS) + r")\s*,?\s*(\d{4})\b", re.IGNORECASE)
+
+
+def date_prefixes(text: str) -> list[str]:
+    """ISO prefixes a date column could be matched against: "in 2006" -> "2006",
+    "February 2017" -> "2017-02"."""
+    out = [f"{y}-{_MONTHS[m.lower()]:02d}" for m, y in _MONTH_YEAR.findall(text)]
+    out += re.findall(r"(?<![\d.-])((?:19|20)\d{2})(?![\d.])", text)
+    return list(dict.fromkeys(out))
 
 
 def dates(text: str) -> list[str]:
@@ -95,7 +109,7 @@ def numbers(text: str) -> list[float | int]:
     """Numbers mentioned in a text ("1,234" -> 1234, "37.4" -> 37.4, "third" -> 3), in order,
     deduplicated."""
     out = []
-    for m in _NUM.findall(text):
+    for m in _NUM.findall(text) + _GLUED_ID.findall(text):
         v = m.replace(",", "")
         x = float(v) if "." in v else int(v)
         if x not in out:
@@ -103,6 +117,79 @@ def numbers(text: str) -> list[float | int]:
     for w in plain(text).split():
         if w in _WORD_NUMBERS and _WORD_NUMBERS[w] not in out:
             out.append(_WORD_NUMBERS[w])
+    return out
+
+
+# Explicit filters written out in the text, as BIRD's evidence does: "WasCompiled = 0",
+# "IndepYear BETWEEN 1980 AND 1995", "courseLevel = 'Level_400'", "course.course_id < 10",
+# "Name LIKE '%Ale%'", "Region IN ('East', 'West')". Identifiers may be `quoted`, "quoted" or [bracketed].
+_IDENT = r"(?:`[^`]{1,60}`|\[[^\]]{1,60}\]|\"[^\"]{1,60}\"|[A-Za-z_][\w]*(?:\.(?:`[^`]{1,60}`|[A-Za-z_]\w*))?)"
+_VAL = r"(?:'(?:[^']|'')*'|-?\d+(?:\.\d+)?)"
+_FILTER = re.compile(
+    rf"(?P<col>{_IDENT})\s*(?:"
+    rf"(?P<op><>|!=|<=|>=|==|=|<|>)\s*(?P<v>{_VAL})"
+    rf"|(?P<not>NOT\s+)?(?P<kw>BETWEEN)\s+(?P<lo>{_VAL})\s+AND\s+(?P<hi>{_VAL})"
+    rf"|(?P<lnot>NOT\s+)?(?P<like>LIKE)\s+(?P<pat>'(?:[^']|'')*')"
+    rf"|(?P<inot>NOT\s+)?(?P<in>IN)\s*\((?P<vals>\s*{_VAL}(?:\s*,\s*{_VAL})*)\s*\)"
+    rf"|IS\s+(?P<isnot>NOT\s+)?NULL\b)",
+    re.IGNORECASE)
+_KEYWORDS = {"and", "or", "not", "where", "refers", "to", "is", "in", "between", "like", "the", "a", "an"}
+
+
+def _lit(tok: str):
+    if tok.startswith("'"):
+        return tok[1:-1].replace("''", "'")
+    return float(tok) if "." in tok else int(tok)
+
+
+def explicit_filters(text: str) -> list[tuple[str, str, tuple]]:
+    """[(identifier, op, values)] for filters written as SQL-like conditions in `text`. The
+    identifier is lowercased and unquoted, and may carry a table prefix ("course.course_id")."""
+    out = []
+    for m in _FILTER.finditer(text):
+        segs = re.findall(r"`[^`]+`|\[[^\]]+\]|\"[^\"]+\"|[A-Za-z_]\w*", m["col"])
+        ident = ".".join(s.strip("`[]\"") for s in segs).lower()
+        if ident in _KEYWORDS or ident.isdigit():
+            continue
+        if m["op"]:
+            op = {"<>": "!=", "==": "="}.get(m["op"], m["op"])
+            out.append((ident, op, (_lit(m["v"]),)))
+        elif m["kw"]:
+            if not m["not"]:
+                out.append((ident, "between", (_lit(m["lo"]), _lit(m["hi"]))))
+        elif m["like"]:
+            out.append((ident, "not_like" if m["lnot"] else "like", (_lit(m["pat"]),)))
+        elif m["in"]:
+            vals = tuple(_lit(v) for v in re.findall(_VAL, m["vals"]))
+            out.append((ident, "not_in" if m["inot"] else "in", vals))
+        else:
+            out.append((ident, "not_is" if m["isnot"] else "is", ()))
+    return out
+
+
+_CONTEXT_FILLER = STOPWORDS | {"between", "more", "less", "than", "over", "under", "above", "below", "least",
+                                  "most", "equal", "about", "around", "refer", "refers", "not", "no", "per"}
+
+
+def _context_words(s: str) -> list[str]:
+    return [w for w in _SPLIT.split(norm_text(_CAMEL.sub(" ", s))) if w and w not in _CONTEXT_FILLER and not w.isdigit()]
+
+
+def number_contexts(text: str, before: int = 3, after: int = 2) -> dict:
+    """Number -> the content words around it ("game ID 178" -> "game id", "254 likes" -> "likes"),
+    which usually name the column the number belongs to. Words are cut at clause punctuation."""
+    out: dict = {}
+    for m in list(_NUM.finditer(text)) + list(_GLUED_ID.finditer(text)):
+        glued = m.re is _GLUED_ID
+        raw = (m.group(1) if glued else m.group(0)).replace(",", "")
+        x = float(raw) if "." in raw else int(raw)
+        left = re.split(r"[,;:?!()]|\.\s", text[max(0, m.start() - 80):m.start()])[-1]
+        if glued:
+            left += " " + text[m.start():m.start(1)]
+        right = re.split(r"[,;:?!()]|\.\s|\d", text[m.end():m.end() + 60])[0]
+        words = _context_words(left)[-before:] + _context_words(right)[:after]
+        if words and x not in out:
+            out[x] = " ".join(words)
     return out
 
 

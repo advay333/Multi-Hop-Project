@@ -16,12 +16,15 @@ table. Then STOP. BC imitates this one order; RL may find others — Φ is order
 Checks (failures dropped and counted, never repaired):
   oracle_reconstruct_mismatch  replaying our parsed plan does not give exactly the rows of the
                                gold query's FROM/JOIN/WHERE (i.e. parsing lost a condition)
-  join_not_key                 a gold join pairs two non-unique columns (JAR's rule:
-                               max(u_k, u_l) = 1), which creates spurious row pairings
+  join_not_key                 a gold join pairs two non-unique keys (JAR's rule:
+                               max(u_k, u_l) = 1), which creates spurious row pairings; a
+                               composite join (`a.x = b.x AND a.y = b.y`) is tested on the
+                               column combination of each side, not column by column
   gold_relation_empty          the gold FROM/JOIN/WHERE selects no rows (e.g. Spider's empty
                                `scholar`/`yelp` tables): nothing to select, and a COUNT answer
                                of 0 needs no evidence
   oracle_timeout / oracle_error / oracle_no_rowid
+WITHOUT ROWID tables are identified by their primary key instead of the rowid.
 Edge-candidate and anchor-candidate recall (report checks 3–4) need the environment's
 candidate sets and are measured in P3 (gate G-6).
 """
@@ -37,7 +40,7 @@ from sqlglot import exp
 from mhtable.data.execute import QueryTimeout, run
 from mhtable.data.schema import SchemaGraph, make_edge
 from mhtable.data.sqlshape import analyse_sql
-from mhtable.sqlrender import from_where, rowid_select
+from mhtable.sqlrender import column_sql, from_where, row_key_sql, rowid_select, table_sql
 from mhtable.types import Action, Anchor, Edge
 
 ROWID_CAP = 2000  # rowids stored per entity set; beyond this only the count is exact
@@ -145,8 +148,8 @@ def _count(con, schema, tables, joins, anchors, timeout_s) -> int:
     return run(con, f"SELECT COUNT(*) {from_where(schema, tables, joins, anchors)}", timeout_s)[0][0]
 
 
-def _entity_set(con, schema, tables, joins, anchors, timeout_s) -> dict:
-    sql = f"SELECT {rowid_select(schema, tables)} {from_where(schema, tables, joins, anchors)}"
+def _entity_set(con, schema, tables, joins, anchors, timeout_s, no_rowid=None) -> dict:
+    sql = f"SELECT {rowid_select(schema, tables, no_rowid)} {from_where(schema, tables, joins, anchors)}"
     rows = run(con, sql, timeout_s, ROWID_CAP + 1)
     truncated = len(rows) > ROWID_CAP
     rows = rows[:ROWID_CAP]
@@ -156,13 +159,13 @@ def _entity_set(con, schema, tables, joins, anchors, timeout_s) -> dict:
 
 
 # ---------------------------------------------------------------- checks
-def _original_rowids(parsed: ParsedGold, timeout_s: float, con) -> tuple[int, set | None]:
+def _original_rowids(parsed: ParsedGold, timeout_s: float, con, schema=None, no_rowid=None) -> tuple[int, set | None]:
     """Row identities of the gold query's own FROM/JOIN/WHERE (aliases resolved)."""
     alias = {}
     for t in parsed.ast.find_all(exp.Table):
         if not t.find_ancestor(exp.Subquery):
             alias[t.name.lower()] = t.alias or t.name
-    sel = ", ".join(f'"{alias[t]}".rowid' for t in sorted(parsed.tables))
+    sel = ", ".join(row_key_sql(schema, t, no_rowid, alias=alias[t]) for t in sorted(parsed.tables))
     frm = parsed.ast.args.get("from") or parsed.ast.args.get("from_")
     body = frm.sql(dialect="sqlite") + "".join(" " + j.sql(dialect="sqlite") for j in parsed.ast.args.get("joins") or [])
     if parsed.ast.args.get("where"):
@@ -173,15 +176,31 @@ def _original_rowids(parsed: ParsedGold, timeout_s: float, con) -> tuple[int, se
     return len(rows), set(rows)
 
 
-def _unique(con, schema, key: str, cache: dict, timeout_s: float) -> bool:
-    if key not in cache:
-        from mhtable.sqlrender import column_sql, table_sql
+def _unique(con, schema, keys: tuple[str, ...], cache: dict, timeout_s: float) -> bool:
+    """Do the columns `keys` (all of one table) identify its rows? Rows with a NULL in any of
+    them never join, so they are ignored."""
+    keys = tuple(sorted(keys))
+    if keys not in cache:
+        t = keys[0].split(".", 1)[0]
+        cols = [column_sql(schema, k) for k in keys]
+        nonnull = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        sql = (f"SELECT (SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(cols)} FROM {table_sql(schema, t)} "
+               f"WHERE {nonnull})), (SELECT COUNT(*) FROM {table_sql(schema, t)} WHERE {nonnull})")
+        n_distinct, n = run(con, sql, timeout_s)[0]
+        cache[keys] = n_distinct == n
+    return cache[keys]
 
-        t = key.split(".", 1)[0]
-        col = column_sql(schema, key)
-        n_distinct, n = run(con, f"SELECT COUNT(DISTINCT {col}), COUNT({col}) FROM {table_sql(schema, t)}", timeout_s)[0]
-        cache[key] = n_distinct == n
-    return cache[key]
+
+def _no_rowid_tables(con, cache: dict) -> dict[str, list[str]]:
+    """WITHOUT ROWID tables of this database -> their primary-key columns (cached per DB)."""
+    if "__no_rowid__" not in cache:
+        out = {}
+        for (name, sql) in con.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'"):
+            if sql and "WITHOUT ROWID" in " ".join(sql.upper().split()):
+                info = con.execute(f'PRAGMA table_info("{name.replace(chr(34), chr(34) * 2)}")').fetchall()
+                out[name.lower()] = [c[1] for c in sorted(info, key=lambda r: r[5]) if c[5]]
+        cache["__no_rowid__"] = out
+    return cache["__no_rowid__"]
 
 
 # ---------------------------------------------------------------- entry point
@@ -199,19 +218,20 @@ def run_oracle(parsed: ParsedGold, schema: SchemaGraph, con: sqlite3.Connection,
         else:
             start = parsed.tables[0]
         actions = canonical_actions(parsed, start)
+        no_rowid = _no_rowid_tables(con, unique_cache)
 
         states = replay(actions)
-        res.entity_sets = [_entity_set(con, schema, *st, timeout_s) for st in states]
+        res.entity_sets = [_entity_set(con, schema, *st, timeout_s, no_rowid) for st in states]
         res.trajectory = [Action(a.kind, a.table, a.anchor, a.edge, lookahead_rows=es["rows"])
                           for a, es in zip(actions, res.entity_sets)] + [actions[-1]]
 
         # Check: our replayed final relation == the gold query's own FROM/JOIN/WHERE.
         tables, joins, anchors = states[-1]
-        n_orig, orig = _original_rowids(parsed, timeout_s, con)
+        n_orig, orig = _original_rowids(parsed, timeout_s, con, schema, no_rowid)
         if orig is None:
             same = n_orig == res.entity_sets[-1]["rows"]
         else:
-            mine = set(run(con, f"SELECT {rowid_select(schema, tables)} {from_where(schema, tables, joins, anchors)}",
+            mine = set(run(con, f"SELECT {rowid_select(schema, tables, no_rowid)} {from_where(schema, tables, joins, anchors)}",
                            timeout_s))
             same = mine == orig
         if not same:
@@ -219,10 +239,13 @@ def run_oracle(parsed: ParsedGold, schema: SchemaGraph, con: sqlite3.Connection,
         if res.entity_sets[-1]["rows"] == 0:
             res.fail_reasons.append("gold_relation_empty")
 
-        # Check: every gold join has a unique column on at least one side.
+        # Check: every gold join has a unique key on at least one side (all its columns together).
         for e in parsed.edges:
-            if not all(_unique(con, schema, a, unique_cache, timeout_s) or
-                       _unique(con, schema, b, unique_cache, timeout_s) for a, b in e):
+            sides: dict[str, list[str]] = defaultdict(list)
+            for pair in e:
+                for col in pair:
+                    sides[col.split(".", 1)[0]].append(col)
+            if not any(_unique(con, schema, tuple(cols), unique_cache, timeout_s) for cols in sides.values()):
                 res.fail_reasons.append("join_not_key")
                 break
     except QueryTimeout:

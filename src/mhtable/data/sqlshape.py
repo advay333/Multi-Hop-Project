@@ -8,6 +8,7 @@ job and does not affect fit.
 
   strict  - exactly the report's action set: ops {=, <, >}, <= 2 filters, declared-FK joins
   relaxed - also LIKE / IN / BETWEEN / <= / >= / != / IS NULL, 3 filters, undeclared equi-joins
+  (`col LIKE 'text'` without wildcards counts as `col = 'text'`; LEFT/RIGHT/FULL joins fit neither)
 
 The P2 oracle builds on this to extract gold edges/anchors; until then the data build uses it
 for tier flags and the question category.
@@ -105,6 +106,9 @@ def analyse_sql(sql: str, schema: SchemaGraph | None, horizon: int = 5):
     edges = []
     joins = ast.args.get("joins") or []
     for j in joins:
+        # LEFT/RIGHT/FULL joins keep unmatched rows padded with NULLs; the MDP's JOIN is an inner join.
+        if (j.args.get("side") or "").upper() in ("LEFT", "RIGHT", "FULL"):
+            hard.append("outer_join")
         on = j.args.get("on")
         if on is None:
             if j.args.get("using"):
@@ -164,6 +168,13 @@ def analyse_sql(sql: str, schema: SchemaGraph | None, horizon: int = 5):
             values = [] if isinstance(_unwrap(node.expression), exp.Null) else [node.expression]
         else:  # Like / ILike
             values = [node.expression]
+            v = _unwrap(values[0])
+            if (op in ("like", "ilike") and isinstance(v, exp.Literal) and v.is_string
+                    and "%" not in v.this and "_" not in v.this):
+                # LIKE without wildcards is a (case-insensitive) equality: record it as `=`. The
+                # oracle's reconstruction check drops the question if case makes them differ.
+                add_anchor(node.this, "=", values)
+                return
         add_anchor(node.this, op, values, relaxed_reason=op)
 
     # --- WHERE predicates (column-column equalities across tables count as joins)

@@ -146,7 +146,7 @@ All records are plain JSON-serialisable dataclasses in `mhtable/types.py`.
 | `gold_tables` | list[str] | tables of the gold query, FROM/JOIN order |
 | `gold_edges` | list[Edge] | join edges in the gold SQL (canonically ordered column pairs) |
 | `gold_anchors` | list[Anchor] | filters `(table.column, op, raw literal values)`; compared via `Anchor.key()` |
-| `gold_entity_sets` | list[dict] | after each gold action except STOP: `{"rows": n, "truncated": bool, "rowids": {table: [...]}}` (rowids capped at 2,000) |
+| `gold_entity_sets` | list[dict] | after each gold action except STOP: `{"rows": n, "truncated": bool, "rowids": {table: [...]}}` (rowids capped at 2,000; a `WITHOUT ROWID` table lists its primary key as a JSON array string, e.g. `"[1,\"ca\"]"`) |
 | `gold_trajectory` | list[Action] | canonical action sequence for BC, with look-ahead row counts |
 | `monotone` | bool | False for aggregation, ORDER BY…LIMIT, HAVING or negated filters (report A.7) |
 | `fail_reasons` | list[str] | why it is outside a tier (empty if it fits), incl. `empty_answer`, `exec_error`, `exec_timeout`, `answer_too_large` |
@@ -258,10 +258,16 @@ its JOIN (ANCHOR is only legal on visited tables); STOP. No anchors → SEED the
 
 **Checks** (failures dropped and counted, never repaired): `oracle_reconstruct_mismatch` —
 replaying the parsed plan does not give exactly the rows of the gold query's own
-FROM/JOIN/WHERE; `join_not_key` — a gold join pairs two non-unique columns (JAR's
-max(u_k, u_l) = 1 rule); `gold_relation_empty` — the gold FROM/JOIN/WHERE selects no rows
+FROM/JOIN/WHERE; `join_not_key` — a gold join pairs two non-unique keys (JAR's
+max(u_k, u_l) = 1 rule; a composite join `a.x = b.x AND a.y = b.y` is tested on each side's
+column combination, from data-v3); `gold_relation_empty` — the gold FROM/JOIN/WHERE selects no rows
 (added in P3; data-v2 predates it, so loaders apply the same rule); `oracle_timeout` /
-`oracle_error`. Edge- and anchor-candidate recall
+`oracle_error` (oracle queries get their own, longer timeout: `--oracle-timeout`, default
+120 s). Entity sets identify rows by rowid; `WITHOUT ROWID` tables (BIRD `language_corpus`) use
+their primary key as a JSON array string instead (from data-v3). Gold analysis (`sqlshape`)
+rejects LEFT/RIGHT/FULL joins (`outer_join`) and records `col LIKE 'text'` without wildcards as
+`col = 'text'` (from data-v3; the reconstruction check catches any case-sensitivity difference).
+Edge- and anchor-candidate recall
 need the environment's candidate sets and are reported as **coverage** in P3 (gate G-6).
 
 **`sqlrender.py`** — renders a state (visited tables, joins, anchors) as SQL with original
@@ -272,7 +278,7 @@ identifier spellings. Shared by the oracle and the environment so both define R_
 | Module | Demands | Outputs |
 |---|---|---|
 | `env/text.py` | strings | tokens (camel/snake split, stopwords dropped, plurals folded), numbers incl. number words/ordinals, ISO dates, quoted phrases, operator cues; `Similarity` interface with `LexicalSimilarity` (the P4 embedding scorer implements the same interface) |
-| `env/index.py` | `SchemaGraph`, DB | `DbIndex` per database, stored as `index/<db_ref>.json`: column stats (rows, distinct, uniqueness u, numeric, min/max, avg length); candidate joins with JAR features (e name similarity, j value containment, u, ω = (e + j)·max u, halved for id-to-id pairs); cell index (≤10,000 most frequent values per non-ID column). `CellSearch.lookup(text)` → top (column, value, score) |
+| `env/index.py` | `SchemaGraph`, DB | `DbIndex` per database, stored as `index/<db_ref>.json`: column stats (rows, distinct, uniqueness u, numeric, min/max, avg length); candidate joins with JAR features (e name similarity — identically named text columns get at least 0.5, since `name` is a stopword — j value containment, u, ω = (e + j)·max u, halved for id-to-id pairs); cell index (≤10,000 most frequent values per non-ID column). `CellSearch.lookup(text)` → top (column, value, score) |
 | `env/actions.py` | `State`, `EpisodeContext`, `ActionConfig` (tier, edges mode, threshold, caps) | legal candidate actions under the masking rules |
 | `env/env.py` | `EnvConfig`, `EnvData` (local repo copy or HF) | `TableEnv` (below) |
 
@@ -286,14 +292,21 @@ class TableEnv:
 
 **Masking** (illegal actions are never offered): t = 0 → SEED or ANCHOR (an anchor seeds its
 table); t ≥ 1 → ANCHOR on visited tables (≤ 2 strict, ≤ 3 relaxed, no duplicates), JOIN to an
-unvisited episode table, STOP; t = H − 1 → STOP only. Caps: ≤ 6 SEED, ≤ 14 ANCHOR, ≤ 6 JOIN.
+unvisited episode table, STOP; t = H − 1 → STOP only. Caps: ≤ 6 SEED, ≤ 14 ANCHOR, 1 STOP;
+JOIN gets ≥ 6 slots plus whatever the anchors leave unused, at most 12, so |A(s)| ≤ 25. Joins
+rank by ω + 2 · sim(question, target table).
 
 **Anchor candidates** come from the question (+ BIRD evidence) and the database only:
-categorical `=` from cell-index matches (exact phrase, token and 5-letter-prefix matching);
-numbers/number words × the 3 most plausible numeric columns (value range contains the number,
-then name similarity) × operators (=, <, > always; ≤, ≥, ≠ when the wording cues them); dates
-and years against date-like text columns; relaxed adds BETWEEN, IN, ≠ on matched values under
-negation, LIKE for quoted phrases / "the letter x" / partial matches.
+explicit filters written out in the text (BIRD evidence: `WasCompiled = 0`, `IndepYear BETWEEN
+1980 AND 1995`, `Name LIKE '%x%'`, `IS NOT NULL`), resolved to episode columns and ranked first
+(strict keeps only =, <, >); categorical `=` from cell-index matches (exact phrase, token and
+5-letter-prefix matching); numbers/number words × the 3 most plausible numeric columns
+(named in an explicit filter, value range contains the number, then name similarity) plus, per
+number, up to 2 columns named by the words around it ("game ID 178", "254 likes") ×
+operators (=, <, > always; ≤, ≥, ≠ when the wording cues them); dates and years against
+date-like text columns; relaxed adds BETWEEN, IN, ≠ on matched values under negation, LIKE for
+quoted phrases / "the letter x" / partial matches / date prefixes (`release_date LIKE '2006%'`,
+"February 2017" → `'2017-02%'`).
 
 **Look-ahead:** every candidate carries the capped COUNT(*) of the relation it leads to and an
 estimated token count — cardinality estimation, not gold information.
@@ -305,7 +318,11 @@ plugged in (P4). The environment never imports the oracle or reads `gold/` (enfo
 
 **Coverage analysis** (`analysis/coverage.py`, gold-aware, outside the environment) follows each
 gold trajectory through the environment and reports gate G-6, per-step coverage, reasons for
-misses, the edge threshold for 98% gold-join recall, and random-policy smoke tests.
+misses, the edge threshold for 98% gold-join recall, and random-policy smoke tests (needs the
+databases). `analysis/reach.py` measures the same reachability **without databases** —
+membership in the candidate set depends only on question, schema and index — so BIRD coverage
+runs on the laptop; it also reports *sole blockers* (questions whose only missing reason is X)
+and |A(s)|. Its numbers matched `coverage.py` exactly on data-v2.
 
 ### 6.5 Models
 

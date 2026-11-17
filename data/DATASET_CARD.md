@@ -105,7 +105,7 @@ Full details and the exact record shape are documented at the top of
 | G-2 | Row counts (median/mean per table) | ❌ FAIL as motivation — MMQA mean 1,833 rows (2-table) but **median ~15**; 6% of tables exceed 800 rows; ~84–92% of instances fit 4,096 tokens whole. Reframed around join selection + BIRD long tail (`PLAN.md` §0). |
 | G-3 | Path yield | superseded — real questions used instead of enumerated paths |
 | G-4 / G-5 | Template coverage / round-trip pass rate | dropped — no synthetic generation |
-| G-6 | Oracle coverage (gold trajectory inside the action space) | ✅ PASS on Spider+MMQA train — strict 89.6%, relaxed 85.1% (gate 85%); dev 87.8% / 82.5%. BIRD pending. Details below. |
+| G-6 | Oracle coverage (gold trajectory inside the action space) | ✅ PASS on Spider+MMQA train — strict 91.1%, relaxed 86.3% (gate 85%); dev 88.3% / 83.0% (action set of 2026-11-16; data-v2 env: 89.6 / 85.1). BIRD train ✅ strict 88.6%, ❌ relaxed 79.4%; bird_dev 80.1% / 73.6% (was 80.5 / 65.9 and 63.8 / 56.7; pending, PLAN §4a). |
 | G-7 | Leakage gap | pending (needs baselines, P6) |
 | — | Action-set fit | see "Build yields" below |
 | — | Category balance | see "Build yields" below |
@@ -157,7 +157,19 @@ Eligible = fits the tier structurally and the gold SQL returns a non-empty answe
 | Spider | relaxed | 3,113 | 3,066 | 98.5% | join on two non-unique columns: 47 |
 | MMQA | strict | 1,657 | 1,647 | 99.4% | join on two non-unique columns: 10 |
 | MMQA | relaxed | 2,165 | 2,117 | 97.8% | join on two non-unique columns: 48 |
-| BIRD | both | — | — | — | pending molab build |
+| BIRD | strict | 3,856 | 3,612 | 93.7% | non-unique join 198, no rowid 32, timeout 8, mismatch 7 (data-v2, molab) |
+| BIRD | relaxed | 6,024 | 5,487 | 91.1% | non-unique join 463, no rowid 33, mismatch 27, timeout 15 (data-v2, molab) |
+
+BIRD oracle fixes for data-v3 (2026-11-16): composite-key joins tested on the column combination
+(66 of the 463 relaxed `join_not_key` are composite), LEFT JOINs rejected structurally (the 27
+mismatches), `WITHOUT ROWID` tables keyed by primary key (33), oracle timeout 30 → 120 s (15).
+The other 397 `join_not_key` are genuine fan-out joins in BIRD's gold SQL (e.g. superstore's
+`people."Customer ID"` repeats once per region, so the join duplicates rows) and stay rejected.
+Projected relaxed pass rate at most (5,487 + 66 + 33 + 15) / (6,024 − 27) ≈ **93%** (an upper
+bound), still below the 95% gate — to be confirmed by the rebuild. All 114 newly admitted
+questions are in BIRD train (83 strict); the coverage numbers below are on the data-v2
+denominator, worst case with all of them unreachable: strict 86.2%, relaxed 77.5%. Checked locally on the 4 BIRD DBs in the HF cache:
+all 486 previously passing questions keep identical trajectories and row counts.
 
 No reconstruction mismatches: replaying every parsed gold plan reproduces exactly the rows of
 the gold query's FROM/JOIN/WHERE. 4 queries whose single ON clause links three tables (a cycle)
@@ -186,7 +198,35 @@ Questions whose gold relation is empty (Spider's empty `scholar`/`yelp`/`academi
 | dev | strict | 394 | 87.8% | 100% | 100% | 84.8% |
 | dev | relaxed | 458 | 82.5% | 100% | 100% | 80.9% |
 
-Main reasons a gold action is not offered (relaxed train): number not recognised in the question
+**Action-set revision 2026-11-16** (BIRD work, PLAN §4a; measured offline with
+`python -m mhtable.analysis.reach`, data-v2 gold with the data-v3 `LIKE 'text'` → `=` rule
+applied; this tool reproduced the table above exactly before the change):
+
+| Family | Split | strict before → after | relaxed before → after | |A(s)| mean / max (relaxed) |
+|---|---|---|---|---|
+| Spider+MMQA | train | 89.6% → **91.1%** | 85.1% → **86.3%** | 10.9 / 25 |
+| Spider+MMQA | dev | 87.8% → 88.3% | 82.5% → 83.0% | 10.5 / 25 |
+| BIRD | train (2,961 / 4,621) | 80.5% → **88.6%** | 65.9% → **79.4%** | 16.9 / 25 |
+| BIRD | bird_dev (643 / 833) | 63.8% → 80.1% | 56.7% → 73.6% | 17.5 / 25 |
+
+Changes, all tuned on train only: joins ranked by ω + 2·sim(question, target table) and allowed
+the anchors' unused slots (≤ 12); explicit filters parsed from BIRD evidence; per-number column
+ranking from the words around the number; date-prefix LIKE; IDs glued to text ("ID12882").
+Remaining relaxed BIRD-train sole blockers: value not in the 10k cell index 164, join not
+inferred 131 (mostly student_loan `name`~`name` joins, fixed in the index for the next rebuild), join
+outside the top k 108, numeric column outside the top k 106, LIKE pattern 82 (apostrophes written
+as `%`, substrings), value not matched to the question 76, number not in the question 72.
+
+**Local data-v3 dry run (Spider+MMQA, 2026-11-16, not pushed):** full build + new index +
+`analysis.coverage` (real execution, look-ahead, 1,000 random episodes per tier).
+Oracle: Spider strict 2,563/2,566 = 99.9%, relaxed 2,870/2,909 = 98.7%; MMQA strict
+1,652/1,654 = 99.9%, relaxed 2,112/2,149 = 98.3% — only `join_not_key` left, **zero
+reconstruction mismatches from the LIKE → = rule**. `gold_relation_empty` is now an eligibility
+filter (204 Spider + 15 MMQA questions). Train pool: Spider 1,707 strict / 1,944 relaxed, MMQA
+942 / 1,219. G-6 train: strict **91.0%**, relaxed **86.2%**; random policy 0 crashes, |A| mean
+8–9, max 25. Gold-join recall at ω ≥ 0.6667 is now just under 98% (2% quantile 0.643).
+
+Main reasons a gold action is not offered (relaxed train, data-v2 action set): number not recognised in the question
 121, value not matched to the question 116 (mostly meaning-level: "male" -> 'M', "European" ->
 continent 2), numeric column not among the top 3 103, LIKE pattern not generated 43, join outside
 the top 6 41, join below threshold 37, join not inferred 30.

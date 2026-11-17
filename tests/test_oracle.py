@@ -101,3 +101,48 @@ def test_potential_is_jaccard_over_structural_items(schema):
 def test_empty_gold_relation_is_rejected(schema, dept_db):
     p, _ = parse(JOIN3 + "WHERE T3.born_state = 'Texas'", schema)  # nobody was born in Texas
     assert "gold_relation_empty" in run_oracle(p, schema, connect_ro(dept_db)).fail_reasons
+
+
+def _db(tmp_path, name, ddl, rows):
+    db = tmp_path / f"{name}.sqlite"
+    con = sqlite3.connect(db)
+    for stmt in ddl:
+        con.execute(stmt)
+    for table, values in rows.items():
+        con.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(values[0]))})", values)
+    con.commit()
+    con.close()
+    return db
+
+
+def test_composite_key_join_is_accepted(tmp_path):
+    # (tmid, year) identifies a team-season; neither column alone is unique (BIRD hockey-style).
+    db = _db(tmp_path, "comp", ["CREATE TABLE teams (tmid TEXT, year INTEGER, name TEXT)",
+                                "CREATE TABLE coaches (cid INTEGER, tmid TEXT, year INTEGER)"],
+             {"teams": [("BOS", 1990, "Bruins"), ("BOS", 1991, "Bruins"), ("NYR", 1990, "Rangers")],
+              "coaches": [(1, "BOS", 1990), (2, "BOS", 1991), (3, "NYR", 1990), (4, "NYR", 1990)]})
+    g = SchemaGraph.from_sqlite("comp", db)
+    p, _ = parse("SELECT c.cid FROM teams t JOIN coaches c ON t.tmid = c.tmid AND t.year = c.year "
+                 "WHERE t.name = 'Bruins'", g)
+    res = run_oracle(p, g, connect_ro(db))
+    assert res.fail_reasons == []
+    assert res.entity_sets[-1]["rows"] == 2
+
+
+def test_left_join_is_outside_both_tiers(schema):
+    p, feats = parse("SELECT T1.name FROM department AS T1 LEFT JOIN management AS T2 "
+                     "ON T1.Department_ID = T2.department_ID WHERE T1.Creation = '1789'", schema)
+    assert p is None and "outer_join" in feats["relaxed_reasons"]
+
+
+def test_without_rowid_tables_use_primary_key(tmp_path):
+    db = _db(tmp_path, "nr", ["CREATE TABLE words (wid INTEGER, lang TEXT, word TEXT, PRIMARY KEY (wid, lang)) WITHOUT ROWID",
+                              "CREATE TABLE langs (lang TEXT PRIMARY KEY, name TEXT)"],
+             {"words": [(1, "ca", "casa"), (1, "es", "casa"), (2, "ca", "gat")],
+              "langs": [("ca", "Catalan"), ("es", "Spanish")]})
+    g = SchemaGraph.from_sqlite("nr", db)
+    p, _ = parse("SELECT w.word FROM words w JOIN langs l ON w.lang = l.lang WHERE l.name = 'Catalan'", g)
+    res = run_oracle(p, g, connect_ro(db))
+    assert res.fail_reasons == []
+    assert res.entity_sets[-1]["rows"] == 2
+    assert res.entity_sets[-1]["rowids"]["words"] == ["[1,\"ca\"]", "[2,\"ca\"]"]

@@ -33,6 +33,9 @@ policy:
 algo:
   name: ppo
 
+train:
+  device: auto          # auto = GPU if the installed torch build has CUDA, else CPU | cpu | cuda
+
 reward:
   variant: R1           # R0 sparse | R1 shaped
   beta: 0.5

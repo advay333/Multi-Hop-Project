@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from mhtable.algos.base import Algorithm, Batch, collate, evaluate_actions
+from mhtable.algos.base import Algorithm, Batch, collate, device_of, evaluate_actions
 from mhtable.registry import register
 from mhtable.types import Step, Trajectory
 
@@ -83,7 +83,8 @@ class BC(Algorithm):
     def update(self, batch: Batch) -> dict:
         """One pass over the demonstrations in shuffled minibatches."""
         self.policy.train()
-        perm = torch.randperm(len(batch), generator=self.generator)
+        batch = batch.to(device_of(self.policy))
+        perm = torch.randperm(len(batch), generator=self.generator).to(batch.state.device)
         loss_sum = hit = 0.0
         for k in range(0, len(batch), self.batch_size):
             idx = perm[k:k + self.batch_size]
@@ -102,10 +103,10 @@ class BC(Algorithm):
         self.policy.eval()
         loss_sum, correct = 0.0, []
         for k in range(0, len(batch), 1024):
-            part = batch.select(torch.arange(k, min(k + 1024, len(batch))))
+            part = batch.select(torch.arange(k, min(k + 1024, len(batch)))).to(device_of(self.policy))
             loss, c = self._loss(part)
             loss_sum += loss.item() * len(part)
-            correct.append(c)
+            correct.append(c.cpu())
         correct = torch.cat(correct)
         n_traj = int(batch.traj.max().item()) + 1
         wrong = torch.zeros(n_traj).index_add_(0, batch.traj, (~correct).float())

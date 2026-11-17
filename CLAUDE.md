@@ -20,28 +20,21 @@ short-horizon, small-action regime?
 
 ## Status (2026-11-17)
 
-- **P0 repo + storage — done.** **P1 data — done** (`data-v1`). **P2 oracle — done** for
-  Spider+MMQA (`data-v2`). **P3 environment — done** for Spider+MMQA (gate G-6: train strict
-  89.6%, relaxed 85.1%).
-- **BIRD work (2026-11-16, PLAN §4a):** the 4 oracle fixes and an action-set revision are in the
-  code (80 tests pass), not yet in the HF data. BIRD coverage measured offline: train strict
-  88.6% (passes) / relaxed 79.4% (below 85%). BIRD oracle pass rate projected **at most ~93%**
-  relaxed (gate 95%) because of genuine fan-out joins in BIRD's gold SQL. **Two open decisions
-  for the user after the rebuild:** accept ~93% BIRD oracle; accept / keep improving 79% BIRD
-  relaxed coverage. Spider+MMQA was dry-run locally on the new code: oracle 98.3–99.9%, G-6 train
-  91.0% / 86.2%.
-- **Expected data-v3 pool** (verified oracle labels; BIRD = data-v2 + projected admissions):
-  train strict ~5,690 (Spider 1,707 / MMQA 942 / BIRD ~3,040), relaxed ~7,900 (1,944 / 1,219 /
-  ~4,740); fully reachable in the env ≈ 5,000 strict / 6,400 relaxed. Dev 394 / 458 and test
-  1,172 / 1,361 (Spider+MMQA only); bird_dev 643 / 833 as a transfer set. Judged enough: BC
-  needs a few thousand demos, RL is bounded by reader calls, test gives about ±2.5 points
-  (DATASET_CARD "Expected data-v3 pool").
-- **Next step: `data-v3` rebuild on molab** after the user commits and pushes:
-  `notebooks/rebuild_v3.py` builds both families, indexes them from the local build folders,
-  shows verification tables (oracle rates, `analysis.reach`, a 500-question BIRD real-SQL
-  coverage run) and tags only via a separate button. The user sends the step-4 tables back;
-  check them against PLAN §4a (BIRD: no `oracle_no_rowid`, no new `oracle_error`, 0 crashes)
-  before telling them to tag. Not yet run on molab.
+- **P0 repo + storage — done.** **P1 data — done** (`data-v1`). **P2 oracle — done.**
+  **P3 environment — done.** Current data: **`data-v3`** (tagged 2026-11-17 on mhtable-data; data +
+  index together; use `data.revision: data-v3`).
+- **data-v3 pool** (oracle-verified, strict / relaxed): train Spider 1,707 / 1,944, MMQA 942 /
+  1,219, BIRD 3,038 / 4,679; dev 394 / 458; test 1,172 / 1,361 (Spider+MMQA only); bird_dev
+  643 / 832 (transfer set). G-6 reachability: Spider+MMQA train 91.0% / 86.2% (pass), BIRD train
+  87.4% / 79.5%. Fully reachable ≈ 5,060 strict / 6,450 relaxed (DATASET_CARD "data-v3").
+- **User decisions 2026-11-17:** accept the BIRD oracle pass rate (~93%, gate 95%) and BIRD
+  relaxed reachability 79.5% (gate 85%). Spider+MMQA passes every gate.
+- **Open (PLAN §4a): BIRD real-SQL check did not finish** — look-ahead COUNTs on the largest
+  BIRD DBs (`movie_platform`, `talkingdata`) are far too slow (90+ min for part of one tier), so
+  crash-freedom on real BIRD DBs is unverified and RL on BIRD will be slow until fixed (SQLite
+  indexes on join/anchor columns → `data-v4`, a row-count cap, or excluding the largest DBs).
+  Train on Spider+MMQA first. The data-v3 per-tier oracle `fail_reasons` were not seen (molab
+  session lost); `stats/bird.json` on HF has them if the build pushed `stats/`.
 - **Compute:** molab is the main compute **for now** — Prajna login is blocked on a two-factor
   reset (the QR code was never shown; needs a reset from hpc@iitb.ac.in). Prajna becomes main once
   access works (section below).
@@ -55,8 +48,15 @@ short-horizon, small-action regime?
   with the `hash` encoder + mock reader on data-v2 Spider+MMQA: dev join-path accuracy strict
   31.5% / relaxed 25.3% (untrained 0.5%), train subset 77% / 72% — large generalisation gap,
   expected to narrow with real embeddings (PLAN P7). Gate (beat the P6 heuristic) still open.
-- **Next phases:** laptop-only: P6 selectors (truncate, random rows, heuristic, oracle) with the
-  mock reader, P8 PPO, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
+- **P8 PPO — code done 2026-11-17** (98 tests pass): `algos/ppo.py`, RL loop in `train.py`
+  (curriculum, eval, best/last checkpoints, `--resume`), `selectors/oracle.py`, candidate memo,
+  `train.device` (installed torch is CPU-only, so the RTX 4060 is unused). Runs on data-v2
+  Spider+MMQA, hash encoder + mock reader. **Gate G-8 (overfit 20 questions) not passed:** R1
+  80% / R0 55% vs ceiling 100% — entropy collapses early. From the BC checkpoint, dev EM 37% →
+  ~48% (R1 and R0 indistinguishable, one seed), mostly by taking larger sub-tables. PLAN's P8
+  block does not record these results yet.
+- **Next phases:** laptop-only: fix G-8, P6 selectors (truncate, random rows, heuristic) with the
+  mock reader, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
   bge-m3 encoder + embedding cache, full metric suite, reader tokenizer in `materialise`) and
   every real-reader gate. Only one molab run at a time.
 - Always track **strict and relaxed action tiers side by side** (user's request).

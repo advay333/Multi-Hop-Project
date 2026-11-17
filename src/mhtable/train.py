@@ -34,6 +34,7 @@ import numpy as np
 import torch
 
 import mhtable.algos.bc  # noqa: F401  (registers "bc")
+import mhtable.algos.ppo  # noqa: F401  (registers "ppo")
 import mhtable.encoders  # noqa: F401  (registers encoders)
 import mhtable.policies  # noqa: F401  (registers policies)
 import mhtable.readers  # noqa: F401  (registers readers)
@@ -176,8 +177,8 @@ def run_bc(cfg: Config, env, feat, policy, algo, reader, run_dir: Path, limit: i
             best = {"score": score, "epoch": epoch, "dev": rec["dev"], "dev_teacher_forced": rec.get("dev_teacher_forced")}
             save_checkpoint(run_dir / "policy.pt", policy, feat.spec, cfg, {"epoch": epoch, "dev": rec["dev"]})
 
-    policy, _ = load_checkpoint(run_dir / "policy.pt")  # report the best checkpoint
-    actor = PolicyActor(policy, feat)
+    best_policy, _ = load_checkpoint(run_dir / "policy.pt")  # report the best checkpoint
+    policy.load_state_dict(best_policy.state_dict())
     result = {"algo": "bc", "tier": tier, "sources": list(sources), "seed": seed, "reader": reader.id,
               "encoder": cfg.encoder.to_dict(), "parameters": policy.n_params(),
               "demonstrations": {"train": train_stats, "dev": dev_stats},
@@ -186,6 +187,144 @@ def run_bc(cfg: Config, env, feat, policy, algo, reader, run_dir: Path, limit: i
               "train_subset": evaluate_rollouts(env, actor, reader, train_sub) if train_sub else {},
               "reader_calls": reader.calls, "minutes": round((time.time() - t0) / 60, 1)}
     return result
+
+
+# ---------------------------------------------------------------- reinforcement learning
+def _reachable(env, inst, gold, cache: dict) -> bool:
+    """Is every gold action offered when the gold path is followed?"""
+    from mhtable.rollout import _candidates
+
+    s = env.reset(inst)
+    for g in gold.gold_trajectory:
+        match = next((a for a in _candidates(env, s, cache) if a.key() == g.key()), None)
+        if match is None:
+            return False
+        s, done = env.step(s, match)
+        if done:
+            break
+    return True
+
+
+def _mean(trajs, key: str) -> float:
+    return sum(float(t.info.get(key, 0.0)) for t in trajs) / max(len(trajs), 1)
+
+
+def run_rl(cfg: Config, env, feat, policy, algo, reader, run_dir: Path, limit: int | None, log,
+           resume: bool = False) -> dict:
+    """The shared RL loop (report Algorithm 1): sample questions -> rollouts with rewards ->
+    advantages -> update; dev evaluation every `eval_every` iterations. Arms differ only in
+    `algo.compute_advantages` / `algo.update` (and `algo.group_size`)."""
+    from mhtable.rewards import RewardConfig
+    from mhtable.selectors.oracle import OracleSelector
+
+    tier, sources, seed = cfg.env.tier, tuple(cfg.data.sources), cfg.seed
+    t = cfg.get_path("train", Config({}))
+    iterations, per_iter = int(t.get("iterations", 300)), int(t.get("questions_per_iter", 128))
+    eval_every = int(t.get("eval_every", 25))
+    p0, p_iters = float(t.get("curriculum_start", 0.5)), int(t.get("curriculum_iters", 100))
+    rcfg = RewardConfig(cfg.reward.variant, cfg.reward.beta, cfg.reward.lambda_cost)
+    cache: dict = {}
+
+    pool = load_split(env.data, "train", tier, sources, limit, seed)
+    want = int(t.get("questions")) if t.get("questions") else None
+    if want:
+        random.Random(seed).shuffle(pool)
+    if t.get("reachable_only", False):  # checked lazily, so a small subset does not scan the whole split
+        kept = []
+        for x in pool:
+            if _reachable(env, x[0], x[1], cache):
+                kept.append(x)
+                if want and len(kept) >= want:
+                    break
+        pool = kept
+    elif want:
+        pool = pool[:want]
+    dev_items = load_split(env.data, cfg.get_path("data.dev_split", "dev"), tier, sources, limit, seed)
+    eval_items = dev_items if t.get("eval_on", "dev") == "dev" else pool
+    golds = {i.instance_id: g for i, g in pool}
+    log(f"questions: train pool {len(pool)}, eval {len(eval_items)} ({t.get('eval_on', 'dev')}); tier {tier}, "
+        f"reward {rcfg.variant}, group size {algo.group_size}")
+
+    actor = PolicyActor(policy, feat)
+    rng = random.Random(seed)
+    gen = torch.Generator().manual_seed(seed)
+    start_iter, best = 1, None
+    last_path = run_dir / "last.pt"
+    if resume and last_path.exists():
+        ck = torch.load(last_path, map_location="cpu", weights_only=False)
+        policy.load_state_dict(ck["state_dict"])
+        algo.opt.load_state_dict(ck["opt"])
+        start_iter, best = ck["iteration"] + 1, ck["best"]
+        reader.calls = ck["reader_calls"]
+        log(f"resumed after iteration {ck['iteration']}")
+
+    def evaluate(it: int, train_stats: dict) -> dict:
+        nonlocal best
+        rec = {"iteration": it, "reader_calls": reader.calls, "train": train_stats,
+               "eval": evaluate_rollouts(env, actor, reader, eval_items) if eval_items else {}}
+        with open(run_dir / "metrics.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        score = rec["eval"].get("em", 0.0)
+        log(f"iter {it}: eval em {rec['eval'].get('em')} path {rec['eval'].get('path_match')} "
+            f"tokens {rec['eval'].get('tokens')} | reader calls {reader.calls}")
+        if best is None or score > best["score"]:
+            best = {"score": score, "iteration": it, "eval": rec["eval"]}
+            save_checkpoint(run_dir / "policy.pt", policy, feat.spec, cfg, {"iteration": it, "eval": rec["eval"]})
+        torch.save({"state_dict": policy.state_dict(), "opt": algo.opt.state_dict(), "iteration": it, "best": best,
+                    "reader_calls": reader.calls}, last_path)
+        return rec
+
+    t0 = time.time()
+    start = evaluate(0, {}) if start_iter == 1 else None
+    curve = []
+    for it in range(start_iter, iterations + 1):
+        algo.set_progress((it - 1) / max(iterations - 1, 1))
+        # A pool smaller than the batch (overfit runs) is repeated to fill it.
+        batch_items = (rng.sample(pool, per_iter) if len(pool) > per_iter
+                       else [pool[i % len(pool)] for i in range(per_iter)])
+        # Curriculum: with probability p (annealed to 0) start a question after k gold steps.
+        p = p0 * max(0.0, 1 - (it - 1) / p_iters) if p_iters > 0 else 0.0
+        by_k: dict[int, list] = defaultdict(list)
+        for inst, gold in batch_items:
+            n = len(gold.gold_trajectory) - 1  # gold actions before STOP
+            k = rng.randint(1, n - 1) if n > 1 and rng.random() < p else 0
+            by_k[k].append(inst)
+        trajs = []
+        for k, insts in sorted(by_k.items()):
+            trajs += collect(env, actor, reader, insts, mode="sample", oracle_mode="reward", golds=golds,
+                             group_size=algo.group_size, start_after_gold_steps=k, reward_cfg=rcfg,
+                             generator=gen, cand_cache=cache)
+        stats = algo.update(algo.compute_advantages(trajs))
+        row = {"iteration": it, "reader_calls": reader.calls, "episodes": len(trajs), "curriculum_p": round(p, 3),
+               "return": _mean(trajs, "return"), "em": _mean(trajs, "r_ans"), "path_match": _mean(trajs, "path_match"),
+               "sufficient": _mean(trajs, "sufficient"), "steps": sum(len(x.steps) for x in trajs) / len(trajs),
+               **{k: round(v, 5) for k, v in stats.items()}}
+        curve.append(row)
+        with open(run_dir / "train.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+        if it % max(eval_every // 5, 1) == 0 or it == iterations:
+            log(f"iter {it}: return {row['return']:.3f} em {row['em']:.3f} path {row['path_match']:.3f} "
+                f"entropy {stats.get('entropy', 0):.3f} p {row['curriculum_p']}")
+        if it % eval_every == 0 or it == iterations:
+            evaluate(it, row)
+
+    # Reference lines on the training pool: the gold path's return, and the final greedy policy.
+    ceiling = collect(env, OracleSelector(golds), reader, [i for i, _ in pool[:500]], mode="argmax",
+                      oracle_mode="reward", golds=golds, reward_cfg=rcfg, cand_cache=cache)
+    greedy = collect(env, actor, reader, [i for i, _ in pool[:500]], mode="argmax", oracle_mode="reward",
+                     golds=golds, reward_cfg=rcfg, cand_cache=cache)
+    final = {k: round(sum(r[k] for r in curve[-10:]) / len(curve[-10:]), 4)
+             for k in ("return", "em", "path_match", "sufficient")} if curve else {}
+    return {"algo": cfg.algo.name, "tier": tier, "sources": list(sources), "seed": seed, "reader": reader.id,
+            "reward": cfg.reward.to_dict(), "encoder": cfg.encoder.to_dict(), "init": t.get("init"),
+            "train_pool": len(pool), "iterations": iterations, "episodes_per_iteration": per_iter * algo.group_size,
+            "eval_start": start["eval"] if start else None, "eval_best": best,
+            "train_last10_sampled": final,
+            "train_pool_greedy": {"n": len(greedy), "return": round(_mean(greedy, "return"), 4),
+                                  "em": round(_mean(greedy, "r_ans"), 4), "path_match": round(_mean(greedy, "path_match"), 4)},
+            "train_pool_gold_path": {"n": len(ceiling), "return": round(_mean(ceiling, "return"), 4),
+                                     "em": round(_mean(ceiling, "r_ans"), 4)},
+            "reader_calls": reader.calls, "minutes": round((time.time() - t0) / 60, 1)}
 
 
 # ---------------------------------------------------------------- entry point
@@ -197,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=Path("runs"))
     p.add_argument("--run-id", default=None)
     p.add_argument("--limit", type=int, default=None, help="use a random subset of each split (smoke runs)")
+    p.add_argument("--resume", action="store_true", help="RL: continue from <run dir>/last.pt (use the same --run-id)")
     p.add_argument("overrides", nargs="*", help="config overrides, e.g. env.tier=strict algo.lr=1e-3")
     args = p.parse_args(argv)
 
@@ -216,14 +356,28 @@ def main(argv: list[str] | None = None) -> int:
     env = build_env(cfg, args.data_dir, args.index_dir)
     feat = build_featuriser(cfg, env)
     policy = build("policy", cfg.policy, spec=feat.spec)
+    init = cfg.get_path("train.init")
+    bc_policy = None
+    if init:  # start from a behaviour-cloning checkpoint; a frozen copy anchors the KL term
+        policy, ck = load_checkpoint(init)
+        if ck["spec"] != feat.spec:
+            raise SystemExit(f"checkpoint {init} was trained with features {ck['spec']}, this run has {feat.spec}")
+        bc_policy, _ = load_checkpoint(init)
+    want = cfg.get_path("train.device", "auto")  # auto: the GPU when this torch build can use one
+    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu") if want == "auto" else want)
+    policy.to(device)
+    if bc_policy is not None:
+        bc_policy.to(device)
     reader = CachedReader(build("reader", cfg.reader), run_dir / "reader_cache.jsonl")
-    algo = build("algo", dict(cfg.algo, seed=cfg.seed) if cfg.algo.name == "bc" else cfg.algo, policy=policy)
-    log(f"run {run_id}: policy {cfg.policy.name} ({policy.n_params():,} parameters), reader {reader.id}")
+    extra = {"seed": cfg.seed} if cfg.algo.name == "bc" else {"seed": cfg.seed, "bc_policy": bc_policy}
+    algo = build("algo", cfg.algo, policy=policy, **extra)
+    log(f"run {run_id}: policy {cfg.policy.name} ({policy.n_params():,} parameters), reader {reader.id}, "
+        f"init {init or 'random'}, device {device}")
     try:
         if cfg.algo.name == "bc":
             result = run_bc(cfg, env, feat, policy, algo, reader, run_dir, args.limit, log)
         else:
-            raise SystemExit(f"algo {cfg.algo.name!r}: the RL training loop is added in P8/P9")
+            result = run_rl(cfg, env, feat, policy, algo, reader, run_dir, args.limit, log, args.resume)
     finally:
         env.close()
     (run_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

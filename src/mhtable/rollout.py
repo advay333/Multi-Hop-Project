@@ -73,13 +73,14 @@ class PolicyActor:
     def act(self, states: list[State], cands: list[list[Action]], mode: str,
             generator: torch.Generator | None = None) -> list[Decision]:
         feats = [self.featuriser(s, c) for s, c in zip(states, cands)]
-        state = torch.from_numpy(np.stack([f[0] for f in feats]))
+        device = next(self.policy.parameters()).device
+        state = torch.from_numpy(np.stack([f[0] for f in feats])).to(device)
         actions, mask = pad_actions([f[1] for f in feats])
         was_training = self.policy.training
         self.policy.eval()
-        logits, value = self.policy(state, actions, mask)
+        logits, value = self.policy(state, actions.to(device), mask.to(device))
         self.policy.train(was_training)
-        logp = torch.log_softmax(logits, dim=-1)
+        logp, value = torch.log_softmax(logits, dim=-1).cpu(), value.cpu()  # sampling uses the CPU generator
         if mode == "argmax":
             idx = logp.argmax(dim=-1)
         else:
@@ -89,12 +90,23 @@ class PolicyActor:
                 for i in range(len(states))]
 
 
-def _gold_prefix(env, s: State, gold: GoldRecord, k: int) -> State:
+def _candidates(env, s: State, cache: dict) -> list[Action]:
+    """Candidate actions of `s`, memoised on (question, tier, state structure). The environment
+    is deterministic, so rollouts that pass through the same state — the members of a group, or
+    the same question in a later iteration — share one enumeration and its look-ahead counts."""
+    key = (s.instance.instance_id, env.cfg.actions.tier, s.t, tuple(s.visited), tuple(s.joins),
+           tuple(a.key() for a in s.anchors))
+    if key not in cache:
+        cache[key] = env.candidate_actions(s)
+    return cache[key]
+
+
+def _gold_prefix(env, s: State, gold: GoldRecord, k: int, cache: dict) -> State:
     """Follow up to k gold actions (never STOP); stop early if one is not offered."""
     for g in gold.gold_trajectory[:k]:
         if g.kind == "STOP":
             break
-        match = next((a for a in env.candidate_actions(s) if a.key() == g.key()), None)
+        match = next((a for a in _candidates(env, s, cache) if a.key() == g.key()), None)
         if match is None:
             break
         s, done = env.step(s, match)
@@ -107,9 +119,12 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
             mode: str = "sample", oracle_mode: str = "off",
             golds: Mapping[str, GoldRecord] | None = None, group_size: int = 1,
             start_after_gold_steps: int = 0, reward_cfg: RewardConfig | None = None,
-            generator: torch.Generator | None = None) -> list[Trajectory]:
+            generator: torch.Generator | None = None, cand_cache: dict | None = None) -> list[Trajectory]:
     """Run `group_size` episodes per instance. Trajectories come back grouped: the rollouts of
-    instances[i] are at positions i*group_size .. (i+1)*group_size - 1."""
+    instances[i] are at positions i*group_size .. (i+1)*group_size - 1. `cand_cache` (a dict the
+    caller keeps) lets candidate enumerations be reused across calls; without it they are
+    shared only inside this call."""
+    cand_cache = {} if cand_cache is None else cand_cache
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if oracle_mode not in ORACLE_MODES:
@@ -134,7 +149,7 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
         if inst.instance_id not in starts:
             s = env.reset(inst)
             if start_after_gold_steps:
-                s = _gold_prefix(env, s, golds[inst.instance_id], start_after_gold_steps)
+                s = _gold_prefix(env, s, golds[inst.instance_id], start_after_gold_steps, cand_cache)
             starts[inst.instance_id] = s
         for g in range(group_size):
             states.append([starts[inst.instance_id]])
@@ -144,7 +159,7 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
     live = list(range(len(trajs)))
     while live:
         cur = [states[i][-1] for i in live]
-        cands = [env.candidate_actions(s) for s in cur]
+        cands = [_candidates(env, s, cand_cache) for s in cur]
         decisions = actor.act(cur, cands, mode, generator)
         still = []
         for i, s, c, d in zip(live, cur, cands, decisions):

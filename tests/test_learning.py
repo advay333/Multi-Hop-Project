@@ -378,3 +378,66 @@ def test_train_entry_point_bc(tmp_path, data_dir, gold):  # noqa: F811
     assert len((run / "metrics.jsonl").read_text().splitlines()) == 2 and (run / "config.yaml").exists()
     policy, ck = train.load_checkpoint(run / "policy.pt")
     assert ck["spec"]["d_emb"] == 32 and policy.n_params() > 0
+
+
+# ---------------------------------------------------------------- P8: PPO
+def test_ppo_advantages_and_update(setup):
+    import copy
+
+    from mhtable.algos.ppo import PPO
+
+    env, feat, policy, golds = setup
+    g = torch.Generator().manual_seed(0)
+    trajs = collect(env, PolicyActor(policy, feat), MockReader(), [_inst()] * 16, mode="sample",
+                    oracle_mode="reward", golds=golds, generator=g)
+    ppo = PPO(policy, bc_policy=copy.deepcopy(policy), batch_size=32, epochs=2)
+    batch = ppo.compute_advantages(trajs)
+    adv, ret = gae([s.reward for s in trajs[0].steps], [s.value for s in trajs[0].steps], 1.0, 0.95)
+    n0 = len(trajs[0].steps)
+    assert batch.advantage[:n0].tolist() == pytest.approx(adv) and batch.returns[:n0].tolist() == pytest.approx(ret)
+    before = [p.clone() for p in policy.parameters()]
+    stats = ppo.update(batch)
+    assert all(np.isfinite(v) for v in stats.values()) and stats["kl_bc"] >= -1e-6 and stats["entropy"] > 0
+    assert any(not torch.equal(a, b) for a, b in zip(before, policy.parameters()))
+    assert all(not p.requires_grad for p in ppo.bc_policy.parameters())  # the BC anchor is frozen
+    ppo.set_progress(1.0)
+    assert ppo.entropy_coef == pytest.approx(0.001)
+    assert PPO(policy).kl_bc_coef == 0.0  # no BC policy -> no KL term
+
+
+def test_candidates_are_shared_inside_a_group(setup):
+    env, feat, policy, golds = setup
+    calls = []
+    real = env.candidate_actions
+    env.candidate_actions = lambda s: (calls.append(s.t), real(s))[1]
+    cache = {}
+    collect(env, PolicyActor(policy, feat), MockReader(), [_inst()], mode="sample", oracle_mode="reward",
+            golds=golds, group_size=8, generator=torch.Generator().manual_seed(0), cand_cache=cache)
+    assert calls.count(0) == 1 and len(calls) == len(cache)  # one enumeration per distinct state
+    n = len(calls)
+    collect(env, PolicyActor(policy, feat), MockReader(), [_inst()], mode="argmax", oracle_mode="metric_only",
+            golds=golds, cand_cache=cache)
+    assert len(calls) <= n + 4 and calls.count(0) == 1  # a later call reuses them
+
+
+def test_train_entry_point_ppo_overfits_one_question(tmp_path, data_dir, gold):  # noqa: F811
+    """Gate G-8 in miniature: PPO from a random start, sparse reward, mock reader."""
+    import json
+
+    from mhtable import train
+
+    _write_repo(data_dir, gold)
+    cfg = Path(__file__).parents[1] / "configs" / "experiments" / "ppo.yaml"
+    args = ["--config", str(cfg), "--data-dir", str(data_dir), "--out", str(tmp_path / "runs"), "--run-id", "p",
+            "data.sources=[spider]", "policy.d=32", "policy.hidden=64", "encoder.dim=32", "algo.lr_actor=0.003",
+            "algo.lr_critic=0.003", "algo.batch_size=64", "train.questions_per_iter=32", "train.eval_every=20",
+            "train.eval_on=train", "train.curriculum_iters=0", "reward.variant=R1"]
+    assert train.main(args + ["train.iterations=40"]) == 0
+    run = tmp_path / "runs" / "p"
+    result = json.loads((run / "result.json").read_text())
+    assert result["train_pool_gold_path"]["em"] == 1.0
+    assert result["train_pool_greedy"]["em"] == 1.0 and result["eval_best"]["eval"]["em"] == 1.0
+    assert result["train_last10_sampled"]["em"] > 0.8
+    assert len((run / "train.jsonl").read_text().splitlines()) == 40 and (run / "last.pt").exists()
+    assert train.main(args + ["train.iterations=42", "--resume"]) == 0  # continues from last.pt
+    assert len((run / "train.jsonl").read_text().splitlines()) == 42

@@ -105,7 +105,7 @@ Full details and the exact record shape are documented at the top of
 | G-2 | Row counts (median/mean per table) | ❌ FAIL as motivation — MMQA mean 1,833 rows (2-table) but **median ~15**; 6% of tables exceed 800 rows; ~84–92% of instances fit 4,096 tokens whole. Reframed around join selection + BIRD long tail (`PLAN.md` §0). |
 | G-3 | Path yield | superseded — real questions used instead of enumerated paths |
 | G-4 / G-5 | Template coverage / round-trip pass rate | dropped — no synthetic generation |
-| G-6 | Oracle coverage (gold trajectory inside the action space) | ✅ PASS on Spider+MMQA train — strict 91.1%, relaxed 86.3% (gate 85%); dev 88.3% / 83.0% (action set of 2026-11-16; data-v2 env: 89.6 / 85.1). BIRD train ✅ strict 88.6%, ❌ relaxed 79.4%; bird_dev 80.1% / 73.6% (was 80.5 / 65.9 and 63.8 / 56.7; pending, PLAN §4a). |
+| G-6 | Oracle coverage (gold trajectory inside the action space) | ✅ PASS on Spider+MMQA train (data-v3) — strict 91.0%, relaxed 86.2% (gate 85%); dev 88.3% / 83.0%. BIRD train ✅ strict 87.4%, ❌ relaxed 79.5% (accepted by the user 2026-11-17); bird_dev 80.1% / 73.6%. |
 | G-7 | Leakage gap | pending (needs baselines, P6) |
 | — | Action-set fit | see "Build yields" below |
 | — | Category balance | see "Build yields" below |
@@ -217,7 +217,7 @@ inferred 131 (mostly student_loan `name`~`name` joins, fixed in the index for th
 outside the top k 108, numeric column outside the top k 106, LIKE pattern 82 (apostrophes written
 as `%`, substrings), value not matched to the question 76, number not in the question 72.
 
-**Expected data-v3 pool (2026-11-17; Spider+MMQA from the local dry run, BIRD = data-v2 plus the
+**Expected data-v3 pool (projection made before the rebuild, 2026-11-17; Spider+MMQA from the local dry run, BIRD = data-v2 plus the
 114 questions the oracle fixes admit, minus empty relations — confirm after the molab rebuild):**
 
 | Split | Spider | MMQA | BIRD | Total |
@@ -234,6 +234,34 @@ Sufficiency: BC with a small MLP over ≤ 25 actions needs a few thousand demons
 questions and is limited by reader calls; 1,361 relaxed test questions give roughly ±2.5 points
 (95% CI) on accuracy, with paired comparisons across arms. The weak side is database variety
 (~160 Spider/MMQA DBs + ~70 BIRD train DBs), not question count.
+
+**data-v3 (tagged 2026-11-17, molab `notebooks/rebuild_v3.py`)** — measured pools, all within
+the projections above:
+
+| Split (strict / relaxed) | Spider | MMQA | BIRD |
+|---|---|---|---|
+| train | 1,707 / 1,944 | 942 / 1,219 | 3,038 / 4,679 |
+| dev | 214 / 225 | 180 / 233 | — |
+| test | 642 / 701 | 530 / 660 | — |
+| bird_dev | — | — | 643 / 832 |
+
+Gold-SQL execution (all questions): Spider ok 9,793, empty answer 1,774, >1,000 rows 66, empty
+gold relation 204, error 3; MMQA ok 2,974, empty 99, error 199, empty relation 15, too large 26;
+BIRD ok 9,743, too large 375, timeout 100, empty relation 60, empty 334, error 350.
+G-6 (`analysis.reach`, data-v3 main; questions / reachable):
+
+| Family | Split | strict | relaxed | |A| mean (relaxed) |
+|---|---|---|---|---|
+| Spider+MMQA | train | 2,410/2,649 = **91.0%** | 2,727/3,163 = **86.2%** | 10.9 |
+| Spider+MMQA | dev | 348/394 = 88.3% | 380/458 = 83.0% | 10.5 |
+| BIRD | train | 2,654/3,038 = **87.4%** | 3,720/4,679 = **79.5%** | 17.1 |
+| BIRD | bird_dev | 515/643 = 80.1% | 612/832 = 73.6% | 17.5 |
+
+Fully reachable (usable for BC as-is): Spider+MMQA 2,410 / 2,727 + BIRD 2,654 / 3,720 =
+**5,064 strict / 6,447 relaxed**. Per-tier oracle pass rates for data-v3 were not recorded (the
+molab session was lost before they were saved; `stats/<family>.json` on HF has them if pushed).
+The BIRD real-SQL environment check (`analysis.coverage`) did not finish: look-ahead COUNTs on
+the largest BIRD databases (`movie_platform`, `talkingdata`) are too slow — see PLAN §4a.
 
 **Local data-v3 dry run (Spider+MMQA, 2026-11-16, not pushed):** full build + new index +
 `analysis.coverage` (real execution, look-ahead, 1,000 random episodes per tier).

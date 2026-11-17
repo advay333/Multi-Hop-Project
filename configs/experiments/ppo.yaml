@@ -1,0 +1,33 @@
+# PPO-Clip with GAE (PLAN.md P8; defaults from report Table 4).
+#   python -m mhtable.train --config configs/experiments/ppo.yaml --data-dir <data repo copy> \
+#       --index-dir <copy holding index/> train.init=runs/<bc run>/policy.pt reward.variant=R1
+# reward.variant=R0 gives the sparse-reward run. Without --data-dir the data comes from
+# HuggingFace at data.revision: pin a tag first.
+_base_: ../base.yaml
+
+algo:
+  name: ppo
+  lr_actor: 3.0e-4
+  lr_critic: 1.0e-3
+  clip: 0.2
+  value_clip: 0.2
+  epochs: 4
+  batch_size: 256           # transitions per minibatch
+  gamma: 1.0
+  lam: 0.95
+  entropy_coef: 0.01        # annealed linearly to entropy_coef_final
+  entropy_coef_final: 0.001
+  value_coef: 0.5
+  kl_bc_coef: 0.02          # KL to the BC policy; ignored when train.init is null
+  grad_clip: 0.5
+
+train:
+  init: null                # path to a BC checkpoint (policy.pt); null = random start
+  iterations: 300
+  questions_per_iter: 128
+  eval_every: 25            # dev rollouts every k iterations; the best dev EM is kept
+  eval_on: dev              # dev | train (train = the training pool, for overfit checks)
+  curriculum_start: 0.5     # probability of starting after k gold steps, annealed to 0 ...
+  curriculum_iters: 100     # ... over this many iterations
+  questions: null           # use only this many training questions (overfit gate G-8)
+  reachable_only: false     # keep only questions whose gold path the environment offers

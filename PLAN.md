@@ -107,7 +107,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   molab Spider+MMQA stats identical to the local build; splits instance-disjoint; 20 random gold
   queries re-execute to their stored answers from the uploaded DBs.
 
-### P2 — Oracle (runs inside the data build) — DONE 2026-10-15 for Spider+MMQA (`data-v2`); BIRD fixes in code 2026-11-16, awaiting data-v3
+### P2 — Oracle (runs inside the data build) — DONE 2026-10-15 for Spider+MMQA (`data-v2`); BIRD fixes in `data-v3` (tagged 2026-11-17)
 - `oracle.py`: gold structure (tables, edges, anchors with literal values, monotone flag),
   canonical BC trajectory (selectivity-aware start, BFS joins, anchors after their table's
   JOIN), per-step entity sets (row count + capped rowids), Jaccard potential Φ.
@@ -120,7 +120,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   (`data-v2`, identical to the local run; 20 random trajectories replay to their stored counts).
   **BIRD: 93.7% strict / 91.1% relaxed — accepted as-is for now, see §4a.**
 
-### P3 — Environment (laptop) — DONE 2026-10-16 for Spider+MMQA (index pushed); BIRD G-6: strict passes, relaxed 79.4% (2026-11-16)
+### P3 — Environment (laptop) — DONE 2026-10-16 for Spider+MMQA (index pushed); BIRD G-6 (data-v3): strict 87.4% passes, relaxed 79.5% accepted
 - `env/text.py`, `env/index.py`, `env/actions.py`, `env/env.py` (`DESIGN.md` §6.4);
   `analysis/coverage.py` for G-6; `notebooks/build_index.py` builds and pushes `index/` on molab.
 - Inferred joins (JAR ω) by default, `edges: declared` as ablation; threshold ω ≥ 0.6667 keeps
@@ -222,7 +222,18 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - Cross-entropy on canonical oracle trajectories; this is also the RL initialisation.
 - **Gate:** BC beats the heuristic on dev join-path accuracy (mock reader first, then the real reader).
 
-### P8 — PPO (laptop with mock → molab with the real reader)
+### P8 — PPO (laptop with mock → molab with the real reader) — CODE DONE 2026-11-17; gate G-8 NOT YET READ
+- **Built:** `algos/ppo.py`, the RL loop `train.run_rl` (curriculum, `--resume`, `train.jsonl` +
+  `metrics.jsonl`), `selectors/oracle.py` (gold-path reference), candidate memoisation in
+  `rollout.collect` (`cand_cache`), `configs/experiments/ppo.yaml`. 98 tests pass, including PPO
+  overfitting the fixture question through the real entry point (G-8 in miniature).
+- **Runs started, results not yet read or recorded** (laptop, data-v2 Spider+MMQA relaxed, `hash`
+  encoder, mock reader): `runs/g8-r1`, `runs/g8-r0` (G-8: 20 reachable questions, random start,
+  150 iterations; logs `runs/g8-R1.log`, `runs/g8-R0.log`) and `runs/ppo-relaxed-r1-s0`,
+  `runs/ppo-relaxed-r0-s0` (from `runs/bc-relaxed-s0/policy.pt`, 100 iterations; logs
+  `runs/ppo-R1.log`, `runs/ppo-R0.log`). Read each run's `result.json`: G-8 passes if
+  `train_pool_greedy.return` ≈ `train_pool_gold_path.return`.
+- Original task list:
 - PPO-Clip with GAE, value clipping, entropy, KL to BC (report Table 4 defaults).
 - **Gate G-8:** overfits 20 questions to return ≈ 1.0 (mock reader). Then R0 vs R1 runs.
 
@@ -237,44 +248,35 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 3. Robustness: header ablation, 2- vs 3-table, distractor sweep, BIRD-dev transfer.
 4. Transformer policy; reader comparison; budget sweep.
 
-## 4a. Pending before final training runs
+## 4a. data-v3 (tagged 2026-11-17) and what is still open
 
-- **BIRD oracle gate (P2).** `data-v2` BIRD passes 91.1% relaxed / 93.7% strict (gate 95%).
-  Usable as-is: 4,654 relaxed train + 833 bird_dev questions with verified oracle labels.
-  **Fixes implemented 2026-11-16 (code, tests pass; awaiting the data-v3 rebuild):**
-  1. `join_not_key` (463): composite-key joins now tested on the column combination (66 of
-     them). The other 397 are genuine fan-out joins (e.g. `superstore`) and stay rejected. The
-     environment now offers composite JOINs built from declared FK column pairs (62 of the 67
-     gold composite edges are declared); the rest are unreachable until the index infers them.
-  2. LEFT/RIGHT/FULL JOINs (27): rejected structurally in `sqlshape` (`outer_join`).
-  3. `WITHOUT ROWID` tables (33, `language_corpus`): entity sets keyed on the primary key.
-  4. Timeouts (15): separate `--oracle-timeout` (120 s).
-  Projected relaxed pass rate **at most ~93%** (upper bound: some composite joins may still be
-  non-unique, and LIKE→= can add case mismatches): **the 95% gate cannot be met honestly** because of the
-  397 fan-out joins. Decision for the user after the rebuild: accept ~93% for BIRD (labels are
-  verified either way; failures are dropped, never repaired) or exclude the worst databases.
-  Verified on the 4 BIRD DBs in the laptop's HF cache: 486/486 previously passing questions
-  unchanged.
-- **Next data rebuild (`data-v3`)** also bakes in `gold_relation_empty` as an *eligibility* filter
-  (like `empty_answer`, not an oracle failure; loaders apply it until then) and `col LIKE 'text'` without wildcards → `col = 'text'`. Rebuild **both** families
-  (sqlshape changed for Spider/MMQA too: 1 MMQA question has an outer join). Tag `data-v3` only
-  after the index is rebuilt and pushed, so the tag covers data + index (the current index sits
-  on `main`, pushed after the `data-v2` tag). **One notebook: `notebooks/rebuild_v3.py`.** Steps: build_data spider_mmqa, build_data
-  bird (no tag) → build_index spider_mmqa and bird at revision `main` → laptop verifies with
-  `analysis.reach --data-revision main --index-revision main` and the stats files → tag.
-  Spider+MMQA was dry-run locally on the new code (DATASET_CARD "Local data-v3 dry run"): oracle
-  ≥ 98.3% everywhere, G-6 train 91.0% / 86.2%. Still unexecuted: the BIRD side (WITHOUT ROWID on
-  real `language_corpus`, composite JOINs, evidence-only ops) — check `stats/bird.json` for
-  `oracle_no_rowid` = 0 and no new `oracle_error`, and run full `analysis.coverage --family bird`
-  on molab before tagging.
-- **BIRD environment coverage (G-6).** Action set revised 2026-11-16 (DESIGN §6.4,
-  DATASET_CARD "Action-set revision"); measured offline with `python -m mhtable.analysis.reach`:
-  BIRD train strict **88.6% (passes)** / relaxed **79.4%** (was 80.5 / 65.9); bird_dev 80.1% /
-  73.6%. Spider+MMQA improved too (train 91.1 / 86.3, dev 88.3 / 83.0). Remaining relaxed
-  blockers: values outside the 10k cell index (164), joins not inferred (131; most fixed by the
-  `name`~`name` index change, measurable after the rebuild), join/numeric ranking, rare LIKE
-  shapes. Next candidates if relaxed must reach 85%: embedding similarity (P4) and a runtime
-  exact-value probe for quoted/evidence phrases (needs the DBs, so measured on molab).
+**`data-v3` is tagged** on mhtable-data (data + index together), built on molab with
+`notebooks/rebuild_v3.py`. It contains the 4 BIRD oracle fixes (composite-key joins, outer joins
+rejected, `WITHOUT ROWID` entity sets, separate oracle timeout), `gold_relation_empty` as an
+eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index (DESIGN §6.4).
+
+- **Pools (oracle-verified questions, strict / relaxed):** Spider train 1,707 / 1,944, MMQA train
+  942 / 1,219, BIRD train 3,038 / 4,679; dev 394 / 458; test 1,172 / 1,361 (Spider 642 / 701,
+  MMQA 530 / 660); bird_dev 643 / 832. All match the projections.
+- **G-6 reachability (`analysis.reach`, data-v3 main):** Spider+MMQA train 91.0% / 86.2% (pass),
+  dev 88.3% / 83.0%; BIRD train 87.4% (pass) / **79.5%** (below 85%), bird_dev 80.1% / 73.6%.
+- **User decisions 2026-11-17:** (1) accept the BIRD oracle pass rate (~93% relaxed, gate 95%; the
+  gap is genuine fan-out joins in BIRD's gold SQL; failures are dropped, never repaired);
+  (2) accept BIRD relaxed reachability 79.5% (gate 85%). Spider+MMQA passes every gate.
+- **Not verified:** the 4a pass-rate table (per-tier `fail_reasons`) was lost when the molab
+  session died, so `oracle_no_rowid` = 0 was not seen directly; the eligible counts match the
+  projection. To re-check: `stats/bird.json` on HF (if the build pushed `stats/`).
+- **Open: BIRD real-SQL check (step 4c) not completed.** `analysis.coverage --family bird --limit
+  500` ran 90+ min without finishing tier 1: ~50 min inside `movie_platform` alone, then stalled on
+  `talkingdata` (both have tables of millions of rows). Look-ahead COUNTs hit the 2 s timeout
+  (`EnvConfig.lookahead_timeout_s`) at up to 25 candidates per step. Crash-freedom of composite
+  JOINs / WITHOUT ROWID / evidence anchors on real BIRD DBs is therefore **unverified**, and **RL on
+  BIRD will be equally slow** until fixed. Candidate fixes: SQLite indexes on join/anchor columns
+  (changes the DB files -> `data-v4`), a much shorter look-ahead timeout or row-count cap for huge
+  tables, or excluding the largest DBs. Spider+MMQA are unaffected.
+- **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
+  10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
+  embedding similarity (P4) and a runtime exact-value probe.
 
 ## 4. Things we will measure early because they can change the plan
 

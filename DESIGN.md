@@ -443,7 +443,25 @@ demonstration and are counted. `BC.update` is one epoch of cross-entropy over mi
 (AdamW, gradient clipping, optional label smoothing) on the **actor only**; `BC.evaluate` gives
 teacher-forced loss, per-step accuracy and whole-trajectory accuracy.
 
-**`train.py`** (built in P7 for `algo.name: bc`; the RL loop is added in P8) — builds env,
+**`algos/ppo.py`** (built in P8) — `compute_advantages`: GAE per trajectory with the stored
+V(s), V(terminal) = 0. `update`: K epochs of minibatches on clipped ratio + clipped value loss
+− entropy + KL(π ‖ π_BC) against a frozen copy of the BC policy (term dropped when there is no
+BC start); separate actor/critic learning rates; advantages normalised per batch; entropy
+coefficient annealed by `set_progress`. Stats: policy/value loss, entropy, KL to BC, approximate
+KL to the previous policy, clip fraction, explained variance of the critic.
+
+**RL loop** (`train.run_rl`, built in P8; report Algorithm 1) — per iteration: sample
+`questions_per_iter` training questions (a smaller pool is repeated to fill the batch); with
+probability p (annealed to 0) a question starts after k gold steps; `rollout.collect(sample,
+reward, group_size=algo.group_size)`; `algo.compute_advantages` → `algo.update`. Logs one row
+per iteration to `train.jsonl` (return, EM, path match, entropy, KL, reader calls) and a dev (or
+training-pool) evaluation every `eval_every` iterations to `metrics.jsonl`; keeps the best
+checkpoint by eval EM and `last.pt` for `--resume`. At the end it reports two reference
+numbers on the training pool: the gold path's return (`selectors/oracle.py`) and the final
+greedy policy's. Candidate enumerations are memoised across the whole run (`cand_cache`), since
+the environment is deterministic — group members and repeated questions cost no extra SQL.
+
+**`train.py`** (built in P7 for `algo.name: bc`, P8 for the RL arms) — builds env,
 featuriser, policy, reader and algorithm from the config, trains, evaluates on dev with the
 shared rollout (`argmax`, `metric_only`), keeps the checkpoint with the best dev join-path
 accuracy, and writes `<out>/<run_id>/{config.yaml, metrics.jsonl, policy.pt, result.json}`

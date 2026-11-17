@@ -45,6 +45,13 @@ class Batch:
     def select(self, idx: torch.Tensor) -> "Batch":
         return Batch(**{k: v[idx] for k, v in self.__dict__.items()})
 
+    def to(self, device) -> "Batch":
+        return Batch(**{k: v.to(device) for k, v in self.__dict__.items()})
+
+
+def device_of(policy) -> torch.device:
+    return next(policy.parameters()).device
+
 
 def collate(trajs: list[Trajectory]) -> Batch:
     steps = [(i, t, s) for i, tr in enumerate(trajs) for t, s in enumerate(tr.steps)]
@@ -106,9 +113,14 @@ def evaluate_actions(policy, batch: Batch) -> tuple[torch.Tensor, torch.Tensor, 
 class Algorithm:
     """Base class of every training arm; subclasses are registered under kind "algo"."""
 
+    group_size = 1  # rollouts per question the arm wants from the collector (GRPO: G)
+
     def __init__(self, policy, **cfg):
         self.policy = policy
         self.cfg = cfg
+
+    def set_progress(self, frac: float) -> None:
+        """Called once per iteration with the fraction of training done (for schedules)."""
 
     def compute_advantages(self, trajs: list[Trajectory]) -> Batch:
         raise NotImplementedError

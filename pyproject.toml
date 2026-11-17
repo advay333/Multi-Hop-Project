@@ -22,7 +22,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 notebook = ["marimo>=0.10"]
-# Added in later phases: torch (P5), sentence-transformers (P4), vllm (P4, molab only).
+# Policy, rollout and algorithms (P5+). On the laptop install the CPU build first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+train = ["torch>=2.2"]
+# Added in later phases: sentence-transformers (P4), vllm (P4, molab only).
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -45,16 +45,24 @@ short-horizon, small-action regime?
 - **Compute:** molab is the main compute **for now** — Prajna login is blocked on a two-factor
   reset (the QR code was never shown; needs a reset from hpc@iitb.ac.in). Prajna becomes main once
   access works (section below).
-- **Next phase: P4** — readers (mock / HF / vLLM behind one interface, cached), encoders +
-  embedding cache, metrics. Then P5 shared rollout + rewards + MLP policy + algorithm interface,
-  P6 baselines + oracle ceiling, P7 BC, P8 PPO, P9 GRPO and the PPO/GRPO × sparse/shaped grid.
+- **P5 learning core — done 2026-11-17** (built before P4 because it needs no molab run; 93 tests
+  pass): `featurise.py`, `policies/mlp.py`, `rewards.py`, `rollout.py`, `algos/base.py`,
+  `firewall.py`, `sufficiency.py`, plus the reader/encoder interface slices (`readers/base.py`,
+  `prompt.py`, `mock.py`; `encoders/base.py` with a `hash` test encoder, `cache.py`; `metrics.py`
+  with EM/set-F1 only). Needs `torch` (CPU build installed in `.venv`; extra `train`).
+- **Next phases:** laptop-only: P6 selectors (truncate, random rows, heuristic, oracle) with the
+  mock reader, P7 BC, P8 PPO, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
+  bge-m3 encoder + embedding cache, full metric suite, reader tokenizer in `materialise`) and
+  every real-reader gate. Only one molab run at a time.
 - Always track **strict and relaxed action tiers side by side** (user's request).
 
 ## Where things live
 
-- Code: `src/mhtable/` (installable: `pip install -e ".[dev]"`), tests in `tests/` (`pytest`, ~5 s).
+- Code: `src/mhtable/` (installable: `pip install -e ".[dev]"`), tests in `tests/` (`pytest`, ~30 s with torch).
   Key modules: `data/` (norm, schema, sqlshape, execute, loaders, mmqa_db, split, build),
-  `oracle.py`, `sqlrender.py`, `env/` (text, index, actions, env), `analysis/` (action_fit,
+  `oracle.py`, `sqlrender.py`, `env/` (text, index, actions, env), learning core (`featurise.py`,
+  `policies/`, `rewards.py`, `rollout.py`, `algos/base.py`, `readers/`, `encoders/`, `metrics.py`,
+  `firewall.py`, `sufficiency.py`), `analysis/` (action_fit,
   coverage, reach — G-6 without databases, works for BIRD on the laptop), `storage.py`, `types.py`, `config.py`, `registry.py`.
 - Data: **all on private HuggingFace repos** under `advay333/`: `mhtable-raw` (sources),
   `mhtable-data` (built data, SQLite DBs, `index/`; tags `data-v1`, `data-v2`), `mhtable-cache`,

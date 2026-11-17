@@ -62,6 +62,8 @@ src/mhtable/
   encoders/         base.py | st.py (bge-m3 etc.) | cache.py (npz/HF lookup)
   featurise.py      state/action -> tensors; firewall assertions; header-ablation flag
   policies/         base.py | mlp.py | transformer.py (later)
+  firewall.py       assert_gold_free(): runtime check used by featurise and the reader prompt
+  sufficiency.py    gold-aware: path_match, sufficient (mock reader's rule; diagnostic)
   rewards.py        R0 sparse, R1 Jaccard potential, token cost
   rollout.py        THE shared collector (sample|argmax, oracle_mode, selector)
   algos/            base.py (advantage + update interface) | bc.py | ppo.py | grpo.py
@@ -142,7 +144,28 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - First molab notebook confirms GPU type, vLLM install, and reader throughput (calls/hour).
 - **Gate:** the oracle selector + real reader runs on 200 dev questions end-to-end on molab.
 
-### P5 — Shared rollout, rewards, policy, algorithm interface (laptop)
+### P5 — Shared rollout, rewards, policy, algorithm interface (laptop) — DONE 2026-11-17 (built before P4; gate passed)
+- **Built:** `featurise.py`, `policies/{base,mlp}.py`, `rewards.py`, `rollout.py`, `algos/base.py`,
+  `firewall.py`, `sufficiency.py`, and the thin P4 slices P5 needs: `readers/{base,prompt,mock}.py`
+  (interface, shared prompt, cache + call counter, mock reader), `encoders/{base,cache}.py`
+  (interface, `hash` test encoder, `EmbCache`), `metrics.py` (EM_norm, set-F1 only).
+  **Still P4:** `hf` / `vllm` readers, the bge-m3 encoder + `build_cache`, the full metric suite,
+  the reader's tokenizer in `materialise`.
+- **Gate passed:** `tests/test_learning.py` (13 tests; 93 in total) — shaping telescopes, GAE at
+  γ = 1, masking + permutation invariance + near-uniform start, firewall (runtime check and
+  import check), plus the worked example of report Figure 1, curriculum start, mock
+  reader/sufficiency, reader cache, and a miniature BC fit that recovers the gold path.
+- **Real-data smoke (laptop, ad-hoc script outside the repo, cached data-v2 Spider+MMQA, 300
+  random relaxed train questions, mock reader, hash encoder):** following the gold trajectory
+  gives path match 87.0% (261/300; consistent with G-6 reachability 86.3%) and sufficient 81.7%
+  (245/300): 20 gold-path sub-tables are cut by the 4,096-token budget and so count as
+  insufficient, 4 off-path ones are still sufficient. An untrained policy gives 7.7%.
+  Telescoping error ≤ 1e-16; MLP policy 2.30M parameters; about 0.1–0.3 s per episode (look-ahead
+  COUNTs dominate; group rollouts recompute them per member — to optimise for GRPO in P9).
+  A frozen cache built from `featurise.required_texts` served all 300 episodes with no miss;
+  it held 213,695 distinct texts for 168 databases (mostly cell values) — the size of the P4
+  embedding job. The mock reader's answer text scores EM 1 on all 10,988 usable gold answers.
+- Original task list:
 - `rollout.collect(env, policy, reader, instances, sample_or_argmax, oracle_mode, selector)`.
 - `rewards.py`: R0 (β = 0), R1 (Jaccard potential, Φ(terminal) = 0), cost λ_c tok/B.
 - `policies/mlp.py`: state tower + action tower, scaled dot-product logits, learnable

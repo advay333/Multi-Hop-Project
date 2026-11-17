@@ -16,11 +16,19 @@ env:
   episode_tables: all   # all tables of the database; "gold_plus_k" is a later ablation
 
 reader:
-  name: mock
+  name: mock            # debugging only (needs gold); hf / vllm arrive in P4
+
+encoder:
+  name: hash            # lexical stand-in for tests and smoke runs; bge-m3 arrives in P4
+  dim: 64
+
+featurise:
+  header_ablation: false  # true: table/column names -> table_i / col_j (robustness study)
 
 policy:
   name: mlp
   d: 256
+  hidden: 512
 
 algo:
   name: ppo

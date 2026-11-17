@@ -331,29 +331,63 @@ and |A(s)|. Its numbers matched `coverage.py` exactly on data-v2.
 cell value once (molab GPU) and pushes shards to `mhtable-cache`. `EmbCache.get(text)` is a
 dict lookup; a cache miss is an error at training time, not a silent re-encode.
 
-**`featurise.py`** — Demands: `State`, `list[Action]`, `EmbCache`, flags (`header_ablation`).
-Outputs: `state_feat [d_s]`, `action_feats [|A|, d_a]`. Asserts no gold field is reachable.
-Count-like scalars are `log1p`-transformed.
+**`featurise.py`** (built in P5) — `Featuriser(env, cache, FeatConfig)(state, actions)` →
+`state_feat [d_s]`, `action_feats [|A|, d_a]` (numpy). Each vector is a fixed number of
+embedding slots followed by scalars scaled to about [0, 1] (counts through `log1p`):
+
+| Vector | Embedding slots (each `d_emb`) | Scalars |
+|---|---|---|
+| state | question; mean of visited tables; mean of applied filters (column + value) | 6: t/H, rows, tokens/B, #tables, #filters, rows-unknown flag |
+| action | what it acts on (table / filter column / mean of the join's columns); filter value; target table | 25: action kind (4), operator class (5), cosine to the question (2), name-similarity scores (2), join ω, e, j, u + unscored/composite flags (6), look-ahead rows, tokens, unknown flag, change in rows (4), value flags (2) |
+
+Sets are mean-pooled (order-free). Texts looked up in the cache are produced by
+`question_text`, `table_text`, `column_text`, `value_text`; `required_texts(inst, schema, index)`
+lists them all for the P4 cache builder. Filter values missing from the cache (question
+numbers, LIKE patterns) become a zero vector plus a flag. `header_ablation` renames tables and
+columns to `table_i` / `col_j` and zeroes the name-similarity scalars (policy inputs only —
+candidate generation still reads real names). `firewall.assert_gold_free` runs on every input,
+and a test checks the module imports nothing gold-aware.
 
 **`policies/`** —
 ```python
 class Policy(nn.Module):
     def forward(self, state_feat, action_feats, mask) -> tuple[Tensor, Tensor]  # logits [B,|A|], value [B]
 ```
-`mlp` (default): state tower + action tower → d = 256, scaled dot product with learnable
-temperature, separate value head. `transformer` (later): same interface, state encoded as
+`mlp` (default, built in P5; 2.3M parameters at d = 256 with 64-d embeddings): state tower +
+action tower → d = 256, scaled dot product with learnable temperature; the critic has its own
+state tower. Each tower projects the embedding slots with one shared linear layer + LayerNorm
+and sends the scalars through a separate MLP. Built as `MLPPolicy(featuriser.spec, d, hidden)`.
+Padded candidates get logit −1e9. `transformer` (later): same interface, state encoded as
 tokens (question, visited tables, anchors, scalars).
 
 **`readers/`** —
 ```python
 class Reader:
     id: str                                                        # part of every cache key
-    def read_batch(self, questions: list[str], subtables: list[str]) -> list[str]
+    def read_batch(self, questions: list[str], subtables: list[str], meta=None) -> list[str]
 ```
-Implementations: `mock` (answers correctly iff the sub-table is sufficient — needs gold, so
-allowed only in training/debug and labelled as such), `hf` (transformers, any size, laptop
-smoke tests), `vllm` (molab). A `CachedReader` wrapper adds batching, the sharded cache and a
-call counter. The prompt template lives in `readers/prompt.py` and is shared by all readers.
+Implementations: `mock` (built in P5: answers correctly iff the sub-table is sufficient — needs
+gold through `meta`, so allowed only in training/debug, and refused by the rollout when
+`oracle_mode="off"`), `hf` (transformers, any size, laptop smoke tests; P4), `vllm` (molab; P4).
+`CachedReader` (built in P5) adds the cache keyed by `sha256(reader id + prompt)`, the optional
+shard file and the call counter (`calls` = cache misses; identical prompts in one batch are sent
+once); it returns `(answers, called)`. The prompt template lives in `readers/prompt.py`, takes
+strings only, and is shared by all readers. Real readers ignore `meta`; it never enters the prompt.
+
+**`sufficiency.py`** (gold-aware, built in P5) — `path_match(state, gold)`: the policy's joins
+and filters equal the gold query's. `sufficient(env, state, materialised, gold)`: the sub-table
+holds what the answer needs — the gold path always; otherwise the oracle's final entity set is
+compared by row id per table (monotone questions: gold rows ⊆ policy rows; non-monotone: same
+tables, same row count, same row ids). Sub-tables cut by the budget, truncated gold entity sets
+and oversized relations count as insufficient. It does not check which columns are shown, so it
+is the mock reader's rule and a diagnostic, not a reported metric.
+
+**`metrics.py`** — P5 has `em_norm` and `set_f1`; the reader is asked for one answer row per
+line with cells separated by ` | `. `em_norm` is 1 when the predicted rows equal the gold rows
+as sets after `norm_value` (row order free), **or** when the two contain the same set of values
+regardless of row structure (a reader that lists values one per line is not punished). This
+defines the outcome reward R_ans. Empty cells are written `""` and a `|` inside a value as `/`. The
+rest of the suite comes in P4/P6.
 
 ### 6.6 Learning and evaluation
 
@@ -367,13 +401,19 @@ call counter. The prompt template lives in `readers/prompt.py` and is shared by 
 def collect(env, actor, reader, instances, *,
             mode: Literal["sample", "argmax"],
             oracle_mode: Literal["reward", "metric_only", "off"],
+            golds: dict[str, GoldRecord] | None = None,   # required unless oracle_mode="off"
             group_size: int = 1,              # >1 for GRPO / MC value estimates
-            start_after_gold_steps: int = 0,  # curriculum
-            ) -> list[Trajectory]
+            start_after_gold_steps: int = 0,  # curriculum (training only)
+            reward_cfg: RewardConfig | None = None, generator=None,
+            ) -> list[Trajectory]             # rollouts of instances[i] are consecutive
 ```
-`actor` is either a `Policy` (via featurise) or a `Selector`. Steps all live episodes in
-lockstep, batches the reader call at the end, then (if `oracle_mode="reward"`) calls
-`rewards.assemble`. `oracle_mode="reward"` is rejected when called from `evaluate.py`.
+`actor` is anything with `act(states, candidate_lists, mode, generator) -> list[Decision]`:
+`PolicyActor(policy, featuriser)` or a P6 selector. Steps all live episodes in lockstep (one
+batched forward per step), batches the reader call at the end (empty sub-tables are not sent),
+fills `traj.info` (`sufficient`, `path_match`, `r_ans`, `visited`, `overflow`, ...) when gold is
+available, then (if `oracle_mode="reward"`) calls `rewards.assemble`. An episode started after
+k gold steps has shaping terms summing to −β·Φ(s_k) instead of 0. `oracle_mode="reward"` is
+rejected when called from `evaluate.py`.
 
 **`algos/`** —
 ```python
@@ -381,6 +421,10 @@ class Algorithm:
     def compute_advantages(self, trajs: list[Trajectory]) -> Batch      # advantages, returns
     def update(self, batch: Batch) -> dict                              # stats: loss, entropy, KL, explained var
 ```
+`algos/base.py` (built in P5) also holds what every arm shares: `Batch` (all steps flattened,
+candidates padded, with `traj` and `group` indices), `collate(trajs)`, `reward_to_go`,
+`gae(rewards, values, gamma, lam)` with V(terminal) = 0, and `evaluate_actions(policy, batch)`
+(log-probability, entropy, value, full log-probabilities for KL terms).
 | Arm | Advantage | Update |
 |---|---|---|
 | `bc` | — (targets are gold actions) | cross-entropy |

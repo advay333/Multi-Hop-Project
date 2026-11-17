@@ -50,8 +50,13 @@ short-horizon, small-action regime?
   `firewall.py`, `sufficiency.py`, plus the reader/encoder interface slices (`readers/base.py`,
   `prompt.py`, `mock.py`; `encoders/base.py` with a `hash` test encoder, `cache.py`; `metrics.py`
   with EM/set-F1 only). Needs `torch` (CPU build installed in `.venv`; extra `train`).
+- **P7 behaviour cloning — code done 2026-11-17** (95 tests pass): `dataset.py`, `algos/bc.py`,
+  `train.py`, `configs/experiments/bc.yaml`; runs land in local `runs/` (gitignored). First runs
+  with the `hash` encoder + mock reader on data-v2 Spider+MMQA: dev join-path accuracy strict
+  31.5% / relaxed 25.3% (untrained 0.5%), train subset 77% / 72% — large generalisation gap,
+  expected to narrow with real embeddings (PLAN P7). Gate (beat the P6 heuristic) still open.
 - **Next phases:** laptop-only: P6 selectors (truncate, random rows, heuristic, oracle) with the
-  mock reader, P7 BC, P8 PPO, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
+  mock reader, P8 PPO, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
   bge-m3 encoder + embedding cache, full metric suite, reader tokenizer in `materialise`) and
   every real-reader gate. Only one molab run at a time.
 - Always track **strict and relaxed action tiers side by side** (user's request).

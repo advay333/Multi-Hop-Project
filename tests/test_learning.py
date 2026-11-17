@@ -317,3 +317,64 @@ def test_gold_free_modules_never_import_gold():
                 imported |= {a.name for a in node.names}
         bad = [m for m in imported if any(x in m for x in ("oracle", "GoldRecord", "rewards", "sufficiency", "mock"))]
         assert not bad, f"{f.name} imports {bad}"
+
+
+# ---------------------------------------------------------------- P7: behaviour cloning
+def _write_repo(data_dir, gold, question_ids=("train", "dev")):  # noqa: F811
+    """Add instances / gold / splits to the miniature data repo (one question in train and dev)."""
+    import json
+
+    inst = _inst()
+    inst.tier = {"strict": True, "relaxed": True}
+    inst.n_gold_tables = 3
+    (data_dir / "instances").mkdir(exist_ok=True)
+    (data_dir / "gold").mkdir(exist_ok=True)
+    (data_dir / "instances" / "spider.jsonl").write_text(json.dumps(inst.to_dict()) + "\n", encoding="utf-8")
+    (data_dir / "gold" / "spider.jsonl").write_text(json.dumps(gold.to_dict()) + "\n", encoding="utf-8")
+    (data_dir / "splits" / "spider_mmqa").mkdir(parents=True, exist_ok=True)
+    for split in question_ids:
+        (data_dir / "splits" / "spider_mmqa" / f"{split}.txt").write_text(inst.instance_id + "\n")
+
+
+def test_load_split_and_demonstrations(setup, data_dir, gold):  # noqa: F811
+    from mhtable.algos.bc import BC, demonstrations
+    from mhtable.dataset import load_split
+
+    env, feat, policy, _ = setup
+    _write_repo(data_dir, gold)
+    items = load_split(env.data, "train", "relaxed", ("spider",))
+    assert len(items) == 1 and items[0][1].gold_trajectory[-1].kind == "STOP"
+    items[0][0].tier["strict"] = False
+    demos, stats = demonstrations(env, feat, items)
+    assert stats["reachable"] == 1 and stats["steps"] == 4 and len(demos[0].steps) == 4
+    # A gold action the environment does not offer -> no demonstration, counted.
+    broken = GoldRecord.from_dict(gold.to_dict())
+    broken.gold_trajectory[0] = GOLD[2]
+    assert demonstrations(env, feat, [(items[0][0], broken)])[1]["unreachable"] == 1
+    bc = BC(policy, lr=1e-2, batch_size=2)
+    batch = bc.compute_advantages(demos)
+    critic_before = [p.clone() for p in policy.critic_parameters()]
+    first = bc.update(batch)
+    for _ in range(40):
+        last = bc.update(batch)
+    assert last["loss"] < first["loss"] and bc.evaluate(batch)["traj_acc"] == 1.0
+    assert all(torch.equal(a, b) for a, b in zip(critic_before, policy.critic_parameters()))  # actor only
+
+
+def test_train_entry_point_bc(tmp_path, data_dir, gold):  # noqa: F811
+    import json
+
+    from mhtable import train
+
+    _write_repo(data_dir, gold)
+    cfg = Path(__file__).parents[1] / "configs" / "experiments" / "bc.yaml"
+    assert train.main(["--config", str(cfg), "--data-dir", str(data_dir), "--out", str(tmp_path / "runs"),
+                       "--run-id", "t", "data.sources=[spider]", "policy.d=32", "policy.hidden=64",
+                       "encoder.dim=32", "algo.lr=0.01", "train.epochs=40", "train.eval_every=20"]) == 0
+    run = tmp_path / "runs" / "t"
+    result = json.loads((run / "result.json").read_text())
+    assert result["dev"]["path_match"] == 1.0 and result["dev"]["em"] == 1.0 and result["dev_untrained"]["n"] == 1
+    assert result["demonstrations"]["train"]["reachable"] == 1 and result["train_subset"]["path_match"] == 1.0
+    assert len((run / "metrics.jsonl").read_text().splitlines()) == 2 and (run / "config.yaml").exists()
+    policy, ck = train.load_checkpoint(run / "policy.pt")
+    assert ck["spec"]["d_emb"] == 32 and policy.n_params() > 0

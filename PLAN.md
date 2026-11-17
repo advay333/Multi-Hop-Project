@@ -65,6 +65,7 @@ src/mhtable/
   firewall.py       assert_gold_free(): runtime check used by featurise and the reader prompt
   sufficiency.py    gold-aware: path_match, sufficient (mock reader's rule; diagnostic)
   rewards.py        R0 sparse, R1 Jaccard potential, token cost
+  dataset.py        gold-aware: (Instance, GoldRecord) pairs for a split and tier
   rollout.py        THE shared collector (sample|argmax, oracle_mode, selector)
   algos/            base.py (advantage + update interface) | bc.py | ppo.py | grpo.py
                     later: ppo_kl.py | reinforce.py | vineppo.py
@@ -179,7 +180,45 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - Selectors: B1 truncate, B2 random rows, heuristic (greedy cosine + top-k), oracle sub-table.
 - **Gate:** numbers on dev for each; the oracle ceiling tells us how much headroom the reader leaves.
 
-### P7 — Behaviour cloning (laptop CPU)
+### P7 — Behaviour cloning (laptop CPU) — CODE DONE 2026-11-17 (built before P6; gate still open)
+- **Built:** `dataset.py`, `algos/bc.py` (`demonstrations`, `BC`), `train.py` (entry point,
+  checkpoints, dev evaluation by rollout), `configs/experiments/bc.yaml`; 95 tests pass.
+  Run now (laptop, offline, against the HF-cache snapshots of data-v2 and its index):
+  `HF_HUB_OFFLINE=1 python -m mhtable.train --config configs/experiments/bc.yaml --data-dir
+  <snapshot with instances/gold/schemas/splits/db> --index-dir <snapshot with index/>
+  --run-id bc-strict-s0 env.tier=strict` (same with `relaxed`). The bare command without
+  `--data-dir` reads HuggingFace at `data.revision` — use it only once `data-v3` is tagged and
+  pinned in the config. Each run's `config.yaml` records the data/index folders, the commit and
+  whether the checkout was dirty (the two runs below predate that and ran on uncommitted code).
+- **First runs** (laptop CPU, cached data-v2 Spider+MMQA, seed 0, **`hash` lexical encoder, mock
+  reader** — a pipeline check, not a result to report; ~12 min each, best of 30 epochs by dev
+  join-path accuracy = epoch 20 in both):
+
+  | Tier | Train demos (reachable / questions) | Dev join-path acc. (untrained → BC) | Dev sufficient | Train-subset path acc. (300) | Dev teacher-forced step acc. |
+  |---|---|---|---|---|---|
+  | strict | 2,402 / 2,638 | 0.5% → **31.5%** (n = 394) | 42.9% | 77.0% | 60.9% |
+  | relaxed | 2,719 / 3,149 | 0.4% → **25.3%** (n = 458) | 37.3% | 72.3% | 57.8% |
+
+  Dev slices (strict / relaxed join-path): Spider 40.7% / 38.2%, MMQA 20.6% / 12.9%; 2-table
+  36.1% / 30.9%, 3-table 14.3% / 4.2%. Dev numbers count questions whose canonical gold path is
+  not offered as failures (46 strict / 78 relaxed; no path match occurred on any of them), so
+  canonical-order reachability (88% / 83%) is roughly the ceiling.
+- **Order matters for reading the numbers:** join-path accuracy is order-free, teacher-forced
+  accuracy demands the oracle's canonical order. Of the greedy dev path matches, 68 of 124
+  (strict) and 65 of 116 (relaxed) follow the canonical order; the other 56 / 51 reach the same
+  joins and filters in a different order. So step accuracy understates BC, and BC's labels are
+  ambiguous between equivalent orders (a known BC weakness, report A.8 — RL is free of it).
+- **Reading:** the pipeline learns (0.5% → 25–32%), but the train–dev gap is large (72–77% vs
+  25–32%), and teacher-forced dev loss rises from epoch 5 on in both tiers while train loss
+  falls — overfitting. Hypothesis (untested): dev databases are unseen and the `hash` encoder
+  only sees shared words, so the policy memorises training schemas; bge-m3 embeddings (P4)
+  should narrow the gap. If they do not, add regularisation (dropout, label smoothing, smaller
+  d) and BIRD demonstrations. 3-table questions are the weak slice.
+- **Open:** the gate needs the P6 heuristic selector to compare against; rerun BC with the real
+  encoder once the P4 embedding cache exists. Memory note: demonstrations hold full feature
+  arrays — fine at 64-d (≈ 0.2 GB), but with 1024-d embeddings ≈ 1–3 GB for Spider+MMQA(+BIRD):
+  store float16 or featurise per minibatch before the bge-m3 runs.
+- Original task list:
 - Cross-entropy on canonical oracle trajectories; this is also the RL initialisation.
 - **Gate:** BC beats the heuristic on dev join-path accuracy (mock reader first, then the real reader).
 

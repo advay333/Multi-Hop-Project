@@ -21,3 +21,6 @@ data/splits/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Local training runs (checkpoints, metrics); kept results go to HuggingFace mhtable-runs
+runs/

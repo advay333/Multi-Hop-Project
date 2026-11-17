@@ -432,6 +432,25 @@ candidates padded, with `traj` and `group` indices), `collate(trajs)`, `reward_t
 | `grpo` | group-normalised return over G rollouts, applied to every step | clipped ratio + KL to BC; logs zero-advantage fraction |
 | later: `reinforce`, `ppo_kl`, `vineppo` | batch mean / same as PPO / MC values from K resets | one step / adaptive KL / clipped ratio |
 
+**`dataset.py`** (gold-aware, built in P7) — `load_split(EnvData, split, tier, sources, limit, seed)`
+→ `(Instance, GoldRecord)` pairs: in the split, inside the tier, with usable oracle labels;
+reads a local copy of the data repo or HuggingFace.
+
+**`algos/bc.py`** (built in P7) — `demonstrations(env, featuriser, items)` follows each gold
+trajectory through the environment and records features plus the index of the gold action
+among the candidates; questions with a gold action the environment does not offer give no
+demonstration and are counted. `BC.update` is one epoch of cross-entropy over minibatches
+(AdamW, gradient clipping, optional label smoothing) on the **actor only**; `BC.evaluate` gives
+teacher-forced loss, per-step accuracy and whole-trajectory accuracy.
+
+**`train.py`** (built in P7 for `algo.name: bc`; the RL loop is added in P8) — builds env,
+featuriser, policy, reader and algorithm from the config, trains, evaluates on dev with the
+shared rollout (`argmax`, `metric_only`), keeps the checkpoint with the best dev join-path
+accuracy, and writes `<out>/<run_id>/{config.yaml, metrics.jsonl, policy.pt, result.json}`
+(local `runs/`, gitignored; nothing is uploaded). `load_checkpoint(path)` rebuilds the policy —
+the RL arms start from it. `evaluate_rollouts` reports path match, sufficiency, EM, overflow,
+steps and tokens, overall and by source and number of gold tables.
+
 **`selectors/`** — non-learned actors with the policy's interface:
 `truncate`, `random_rows`, `heuristic` (greedy cosine), `oracle` (gold trajectory — eval
 ceiling only), later `prompted_planner`, `sql_extract`.

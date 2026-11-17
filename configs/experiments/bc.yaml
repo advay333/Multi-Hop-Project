@@ -1,0 +1,17 @@
+# Behaviour cloning on the oracle's canonical trajectories (PLAN.md P7).
+#   python -m mhtable.train --config configs/experiments/bc.yaml --data-dir <data repo copy> \
+#       --index-dir <copy holding index/> env.tier=strict        (or relaxed, the default)
+# Without --data-dir the data comes from HuggingFace at data.revision: pin a tag first.
+_base_: ../base.yaml
+
+algo:
+  name: bc
+  lr: 3.0e-4
+  batch_size: 256
+  weight_decay: 1.0e-4
+  grad_clip: 0.5
+
+train:
+  epochs: 30
+  eval_every: 5            # dev rollouts every k epochs; the best dev join-path accuracy is kept
+  eval_train_questions: 300  # train questions re-run greedily at the end (overfitting check)

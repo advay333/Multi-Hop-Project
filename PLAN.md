@@ -104,7 +104,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   molab Spider+MMQA stats identical to the local build; splits instance-disjoint; 20 random gold
   queries re-execute to their stored answers from the uploaded DBs.
 
-### P2 — Oracle (runs inside the data build) — DONE 2026-10-15 for Spider+MMQA (`data-v2`); BIRD gate waived, pending
+### P2 — Oracle (runs inside the data build) — DONE 2026-10-15 for Spider+MMQA (`data-v2`); BIRD fixes in code 2026-11-16, awaiting data-v3
 - `oracle.py`: gold structure (tables, edges, anchors with literal values, monotone flag),
   canonical BC trajectory (selectivity-aware start, BFS joins, anchors after their table's
   JOIN), per-step entity sets (row count + capped rowids), Jaccard potential Φ.
@@ -117,7 +117,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   (`data-v2`, identical to the local run; 20 random trajectories replay to their stored counts).
   **BIRD: 93.7% strict / 91.1% relaxed — accepted as-is for now, see §4a.**
 
-### P3 — Environment (laptop) — DONE 2026-10-16 for Spider+MMQA (index pushed); BIRD G-6 pending
+### P3 — Environment (laptop) — DONE 2026-10-16 for Spider+MMQA (index pushed); BIRD G-6: strict passes, relaxed 79.4% (2026-11-16)
 - `env/text.py`, `env/index.py`, `env/actions.py`, `env/env.py` (`DESIGN.md` §6.4);
   `analysis/coverage.py` for G-6; `notebooks/build_index.py` builds and pushes `index/` on molab.
 - Inferred joins (JAR ω) by default, `edges: declared` as ablation; threshold ω ≥ 0.6667 keeps

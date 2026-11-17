@@ -217,6 +217,24 @@ inferred 131 (mostly student_loan `name`~`name` joins, fixed in the index for th
 outside the top k 108, numeric column outside the top k 106, LIKE pattern 82 (apostrophes written
 as `%`, substrings), value not matched to the question 76, number not in the question 72.
 
+**Expected data-v3 pool (2026-11-17; Spider+MMQA from the local dry run, BIRD = data-v2 plus the
+114 questions the oracle fixes admit, minus empty relations — confirm after the molab rebuild):**
+
+| Split | Spider | MMQA | BIRD | Total |
+|---|---|---|---|---|
+| train strict | 1,707 | 942 | ~3,040 | ~5,690 |
+| train relaxed | 1,944 | 1,219 | ~4,740 | ~7,900 |
+| dev strict / relaxed | 214 / 225 | 180 / 233 | — | 394 / 458 |
+| test strict / relaxed | 642 / 701 | 530 / 660 | — | 1,172 / 1,361 |
+| bird_dev strict / relaxed | — | — | 643 / 833 | transfer set |
+
+Gold path fully offered by the environment (usable for BC as-is): about 2,410 / 2,726
+Spider+MMQA train and ~2,620 / ~3,670 BIRD train, i.e. ≈ 5,000 strict / 6,400 relaxed.
+Sufficiency: BC with a small MLP over ≤ 25 actions needs a few thousand demonstrations; RL reuses
+questions and is limited by reader calls; 1,361 relaxed test questions give roughly ±2.5 points
+(95% CI) on accuracy, with paired comparisons across arms. The weak side is database variety
+(~160 Spider/MMQA DBs + ~70 BIRD train DBs), not question count.
+
 **Local data-v3 dry run (Spider+MMQA, 2026-11-16, not pushed):** full build + new index +
 `analysis.coverage` (real execution, look-ahead, 1,000 random episodes per tier).
 Oracle: Spider strict 2,563/2,566 = 99.9%, relaxed 2,870/2,909 = 98.7%; MMQA strict

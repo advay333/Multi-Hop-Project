@@ -409,7 +409,10 @@ source, 2-/3-table, category, monotone vs non-monotone. Paired bootstrap for dif
 
 **Build (molab, `notebooks/build_data.py`; laptop only for `--limit` dev runs):** fetch raw →
 loaders → materialise MMQA DBs → execute gold SQL + tier analysis → split → (P2) oracle labels →
-(P3) edge and cell indexes → push `mhtable-data`, tag `data-vN`.
+(P3) edge and cell indexes → push `mhtable-data`, tag `data-vN`. A full rebuild of both families
+(data + index from the local build folders + verification, tag on a separate button) is one
+notebook, `notebooks/rebuild_v3.py`. The tag is created only after the index is pushed, so a
+`data-vN` tag always covers data and index together.
 
 **Embed (molab):** fetch `mhtable-data` → collect all texts → encode → push `mhtable-cache`.
 

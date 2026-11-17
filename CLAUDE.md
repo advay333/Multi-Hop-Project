@@ -18,18 +18,30 @@ short-horizon, small-action regime?
 
 `PROJECT.md` and `TASK_01_DATASET.md` were deleted on purpose (superseded); do not resurrect them.
 
-## Status (2026-11-08)
+## Status (2026-11-17)
 
 - **P0 repo + storage — done.** **P1 data — done** (`data-v1`). **P2 oracle — done** for
   Spider+MMQA (`data-v2`). **P3 environment — done** for Spider+MMQA (gate G-6: train strict
   89.6%, relaxed 85.1%).
 - **BIRD work (2026-11-16, PLAN §4a):** the 4 oracle fixes and an action-set revision are in the
-  code (tests pass), not yet in the data. BIRD coverage measured offline: train strict 88.6%
-  (passes) / relaxed 79.4%. The oracle gate (95%) is projected at ~93.4% relaxed because of
-  genuine fan-out joins; that is the user's call after the rebuild.
-- **Next step: `data-v3` rebuild on molab** (both families, then both indexes, then verify, then
-  tag), after the user commits and pushes: `notebooks/rebuild_v3.py` does all of it (tag is a
-  separate button). Steps listed in PLAN §4a.
+  code (80 tests pass), not yet in the HF data. BIRD coverage measured offline: train strict
+  88.6% (passes) / relaxed 79.4% (below 85%). BIRD oracle pass rate projected **at most ~93%**
+  relaxed (gate 95%) because of genuine fan-out joins in BIRD's gold SQL. **Two open decisions
+  for the user after the rebuild:** accept ~93% BIRD oracle; accept / keep improving 79% BIRD
+  relaxed coverage. Spider+MMQA was dry-run locally on the new code: oracle 98.3–99.9%, G-6 train
+  91.0% / 86.2%.
+- **Expected data-v3 pool** (verified oracle labels; BIRD = data-v2 + projected admissions):
+  train strict ~5,690 (Spider 1,707 / MMQA 942 / BIRD ~3,040), relaxed ~7,900 (1,944 / 1,219 /
+  ~4,740); fully reachable in the env ≈ 5,000 strict / 6,400 relaxed. Dev 394 / 458 and test
+  1,172 / 1,361 (Spider+MMQA only); bird_dev 643 / 833 as a transfer set. Judged enough: BC
+  needs a few thousand demos, RL is bounded by reader calls, test gives about ±2.5 points
+  (DATASET_CARD "Expected data-v3 pool").
+- **Next step: `data-v3` rebuild on molab** after the user commits and pushes:
+  `notebooks/rebuild_v3.py` builds both families, indexes them from the local build folders,
+  shows verification tables (oracle rates, `analysis.reach`, a 500-question BIRD real-SQL
+  coverage run) and tags only via a separate button. The user sends the step-4 tables back;
+  check them against PLAN §4a (BIRD: no `oracle_no_rowid`, no new `oracle_error`, 0 crashes)
+  before telling them to tag. Not yet run on molab.
 - **Compute:** molab is the main compute **for now** — Prajna login is blocked on a two-factor
   reset (the QR code was never shown; needs a reset from hpc@iitb.ac.in). Prajna becomes main once
   access works (section below).

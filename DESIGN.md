@@ -69,7 +69,7 @@ Kaggle / Colab are interchangeable with molab: the same notebook body works anyw
 |---|---|---|---|
 | `advay333/mhtable-raw` | dataset | Unmodified sources: `spider/` (release zip), `mmqa/` (the two mirror JSONs), `bird/` (train + dev zips), `CHECKSUMS.sha256`, `SOURCES.md` (URLs, dates) | `notebooks/source_data.py` (molab), once |
 | `advay333/mhtable-data` | dataset | Built artefacts: `instances/`, `gold/`, `splits/`, `db/` (SQLite files), `index/` (edge candidates, cell index), `DATASET_CARD.md` | `mhtable.data.build` |
-| `advay333/mhtable-cache` | dataset | `embeddings/<encoder>/` shards, `reader/<reader>/` answer-cache shards | `mhtable.encoders.build_cache`, reader cache flushes |
+| `advay333/mhtable-cache` | dataset | `embeddings/<encoder>/<family>.npz` + `<family>.json` manifest, `reader/<reader>/` answer-cache shards | `mhtable.encoders.build_cache`, reader cache flushes |
 | `advay333/mhtable-runs` | model | `runs/<run_id>/` checkpoints, config, logs, metrics, result tables | `train.py`, `evaluate.py` |
 
 Layout of `mhtable-data`:
@@ -313,8 +313,11 @@ estimated token count — cardinality estimation, not gold information.
 
 `materialise` projects onto join keys, anchor columns and the top-4 question-relevant columns
 of the visited tables, orders rows deterministically by rowid, and cuts rows to fit B tokens
-(`overflow` flag). Token counts are estimated (3.5 chars/token) until the reader's tokenizer is
-plugged in (P4). The environment never imports the oracle or reads `gold/` (enforced by a test).
+(`overflow` flag). The budget is counted by `env/tokens.py`: 3.5 chars/token by default
+(`env.tokenizer: null`, mock-reader runs), or the reader's own tokenizer (`env.tokenizer: reader`
+or a model name; rows are counted in blocks, then the joined text is re-counted so the result is
+exact). Look-ahead token estimates stay character-based. The environment never imports the
+oracle or reads `gold/` (enforced by a test).
 
 **Coverage analysis** (`analysis/coverage.py`, gold-aware, outside the environment) follows each
 gold trajectory through the environment and reports gate G-6, per-step coverage, reasons for
@@ -326,10 +329,16 @@ and |A(s)|. Its numbers matched `coverage.py` exactly on data-v2.
 
 ### 6.5 Models
 
-**`encoders/`** — `Encoder.encode(texts: list[str]) -> np.ndarray[n, d]`.
-`build_cache` embeds every question, `table: col1, col2, ...` string, column name and indexed
-cell value once (molab GPU) and pushes shards to `mhtable-cache`. `EmbCache.get(text)` is a
-dict lookup; a cache miss is an error at training time, not a silent re-encode.
+**`encoders/`** — `Encoder.encode(texts: list[str]) -> np.ndarray[n, d]`; `hash` (tests) and
+`st` (sentence-transformers, `BAAI/bge-m3`, 1024-d, built in P4).
+`python -m mhtable.encoders.build_cache --family F --revision data-vN [--push]` embeds exactly
+`featurise.required_texts` (with and without header ablation) for every question of the family
+in either tier and every split — it reads `instances/`, `schemas/`, `index/`, never `gold/` —
+in resumable 50k-text parts, then writes `embeddings/<encoder>/<family>.npz` (float16) and a
+`<family>.json` manifest to `mhtable-cache`. `EmbCache.load(paths)` keeps one float16 matrix and
+a text → row dict; `get` returns float32; a miss on a required text is an error at training
+time, not a silent re-encode. Configs point at it with `encoder.cache: hf:embeddings/bge-m3/<family>.npz`
+(or a list).
 
 **`featurise.py`** (built in P5) — `Featuriser(env, cache, FeatConfig)(state, actions)` →
 `state_feat [d_s]`, `action_feats [|A|, d_a]` (numpy). Each vector is a fixed number of
@@ -368,7 +377,14 @@ class Reader:
 ```
 Implementations: `mock` (built in P5: answers correctly iff the sub-table is sufficient — needs
 gold through `meta`, so allowed only in training/debug, and refused by the rollout when
-`oracle_mode="off"`), `hf` (transformers, any size, laptop smoke tests; P4), `vllm` (molab; P4).
+`oracle_mode="off"`), `vllm` (P4; the main reader: Qwen2.5-7B-Instruct, float16 on every
+platform, greedy) and `hf` (P4; transformers, laptop smoke tests and the fallback when vLLM will
+not install). Both share `readers/llm.py`: the prompt wrapped in the model's chat template, rows
+cut from the end if the prompt would exceed the context window (counted), answer clean-up
+(fences, "Answer:", bullets), `ReaderStats` (prompts, cut prompts, answers cut by
+`max_new_tokens`, seconds, calls/hour) and `reader_id` = backend : model : precision : greedy :
+max tokens : prompt version, so caches from different setups never mix. Each accepts and ignores
+the other's backend-only keys, so one config serves both.
 `CachedReader` (built in P5) adds the cache keyed by `sha256(reader id + prompt)`, the optional
 shard file and the call counter (`calls` = cache misses; identical prompts in one batch are sent
 once); it returns `(answers, called)`. The prompt template lives in `readers/prompt.py`, takes
@@ -382,12 +398,19 @@ tables, same row count, same row ids). Sub-tables cut by the budget, truncated g
 and oversized relations count as insufficient. It does not check which columns are shown, so it
 is the mock reader's rule and a diagnostic, not a reported metric.
 
-**`metrics.py`** — P5 has `em_norm` and `set_f1`; the reader is asked for one answer row per
-line with cells separated by ` | `. `em_norm` is 1 when the predicted rows equal the gold rows
-as sets after `norm_value` (row order free), **or** when the two contain the same set of values
-regardless of row structure (a reader that lists values one per line is not punished). This
-defines the outcome reward R_ans. Empty cells are written `""` and a `|` inside a value as `/`. The
-rest of the suite comes in P4/P6.
+**`metrics.py`** — the reader is asked for one answer row per line with cells separated by
+` | `. `em_norm` is 1 when the predicted rows equal the gold rows as sets after `norm_value` (row
+order free), **or** when the two contain the same set of values regardless of row structure (a
+reader that lists values one per line is not punished). This defines the outcome reward R_ans.
+Empty cells are written `""` and a `|` inside a value as `/`. P4 adds the rest of report
+Table 3: `set_f1`; `answer_in_subtable` (share of gold answer values that are cells of the
+sub-table the reader saw — separates projection/budget loss from reader errors; read by
+category, since Count/Numerical answers are computed); `item_counts` (join-edge and filter
+precision/recall, micro-averaged); per-hop entity recall/precision vs E* (`sufficiency.entity_overlap`,
+hop = position of the table in the gold trajectory); `summarise` (overall and by source,
+2-/3-table, category, monotone; also `em_when_answer_shown`); `paired_bootstrap` (10,000
+resamples, 95% interval, p). The rollout computes the per-question extras only with `detail=True`
+(evaluation), since entity overlap costs one SQL query per episode.
 
 ### 6.6 Learning and evaluation
 
@@ -481,7 +504,11 @@ source, 2-/3-table, category, monotone vs non-monotone. Paired bootstrap for dif
 `python -m mhtable.data.build --config configs/data.yaml`
 `python -m mhtable.encoders.build_cache --config ...`
 `python -m mhtable.train --config configs/experiments/ppo_r1.yaml`
-`python -m mhtable.evaluate --config ... --selector policy --run <run_id>`
+`python -m mhtable.evaluate --config configs/experiments/eval.yaml --selector oracle|policy [--policy <ckpt>] [--split dev] [--tiers strict relaxed] [--limit N]`
+— built in P4: same rollout/materialiser/reader for every selector, `metric_only`, both tiers
+by default; writes `predictions_<tier>.jsonl`, `result.json` (suite + slices + reader
+calls/hour) and the reader shard; `--reported` refuses the mock reader and the oracle selector.
+`python -m mhtable.storage push <repo> <local> <path in repo>` (notebook uploads).
 
 ## 7. End-to-end flows
 

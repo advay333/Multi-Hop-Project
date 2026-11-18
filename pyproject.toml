@@ -25,7 +25,10 @@ notebook = ["marimo>=0.10"]
 # Policy, rollout and algorithms (P5+). On the laptop install the CPU build first:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 train = ["torch>=2.2"]
-# Added in later phases: sentence-transformers (P4), vllm (P4, molab only).
+# Real readers and encoders (P4): the `hf` reader, the reader's tokenizer in materialise, and
+# the bge-m3 encoder. `vllm` is installed separately on GPU machines (molab / Kaggle / Prajna);
+# it does not run on Windows.
+p4 = ["transformers>=4.56", "sentence-transformers>=5.0", "accelerate>=0.30"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

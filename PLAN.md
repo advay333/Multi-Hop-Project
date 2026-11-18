@@ -28,6 +28,7 @@ and `TASK_01_DATASET.md` were removed on 2026-10-09; their still-valid rules are
 | Laptop (CPU, RTX 4060 8 GB) | All code; unit tests; Spider + MMQA builds (fetched from HF); env/oracle/BC; PPO/GRPO smoke runs with the mock reader or a ≤1.5B reader |
 | **Prajna HPC (main compute from P4)** | SLURM batch jobs on A100 / A40 / L40S / L4 GPUs; reader serving, training runs, seed/arm grids as job arrays, BIRD rebuilds. Rules and open questions: `CLAUDE.md` § Prajna HPC; source: `Updated User Manual for Prajna (AiML) HPC.pdf` |
 | molab (main compute until Prajna access works; GPU, 12 h sessions, 90 min idle shutdown) | Data sourcing to HF; BIRD builds; embedding cache; reader-in-the-loop PPO/GRPO; evaluation |
+| Kaggle (free; added 2026-11-18) | Second GPU box alongside molab: 2× T4 16 GB, 4 CPU cores, 29 GB RAM, 12 h per session, 20 GB saved `/kaggle/working`, 20 min idle timeout for interactive sessions but "Save & Run All" runs in the background; weekly GPU quota set per account (commonly ~30 h, check the account page). Roles: embedding cache, P6 baselines / evaluation, part of the P9 grid. Not for BIRD builds (disk) or CPU-bound RL debugging (4 cores) |
 | GitHub `advay333/Multi-Hop-Project` (public) | Code. Notebooks clone it. |
 | HuggingFace (private) | `mhtable-raw` (sources), `mhtable-data` (built data + SQLite DBs), `mhtable-cache` (embeddings, reader answers), `mhtable-runs` (checkpoints, results) |
 
@@ -134,7 +135,37 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   P4 embedding scorer may recover some; they are reported, not forced.
 - BIRD: index pushed; G-6 below gate (train 80.5% strict / 65.9% relaxed) — pending, see §4a.
 
-### P4 — Readers, encoders, metrics (laptop + molab)
+### P4 — Readers, encoders, metrics (laptop + molab) — CODE DONE 2026-11-18; gate needs the molab run
+- **Built (107 tests pass + 2 `network` tests with tiny real models):** `readers/llm.py` (shared
+  chat prompt, row-cut to the context window, answer clean-up, `reader_id` = backend + model +
+  precision + greedy + max tokens + prompt version), `readers/vllm.py`, `readers/hf.py`,
+  `CachedReader.seconds`; `env/tokens.py` + `env.tokenizer` (null | model | `reader`) — the
+  budget is counted with the reader's tokenizer in `materialise` (look-ahead stays
+  character-based); `encoders/st.py` (bge-m3), `encoders/build_cache.py` (resumable parts,
+  float16, manifest, `--push` to `mhtable-cache embeddings/<encoder>/<family>.npz`), `EmbCache`
+  as one float16 matrix, `encoder.cache: hf:...` in `train.build_featuriser`; the metric suite
+  (`metrics.py`: answer_in_subtable, join-edge / filter P/R, `summarise` by source / 2-3 tables /
+  category / monotone, `paired_bootstrap`; `sufficiency.entity_overlap` per hop; rollout
+  `detail=True`); `evaluate.py` (oracle | policy selector, both tiers, predictions + result,
+  reader calls/hour, `--reported` refuses mock/oracle); `configs/experiments/eval.yaml`
+  (Qwen2.5-7B-Instruct, vLLM, float16, max_model_len 6144); `python -m mhtable.storage push`;
+  molab notebook `notebooks/p4_reader.py` (setup → 5-question smoke → bge-m3 cache → gate on
+  N dev questions, both tiers → push).
+- **Laptop dry run** (data-v2 Spider+MMQA dev, oracle selector, mock reader, 60 questions per
+  tier): EM 93.3% strict / 83.3% relaxed, but **answer_in_subtable only 69% / 48%**. Even on the
+  gold path, the answer's columns are often not shown: of the 40 strict Select/List questions
+  on the gold path, 15 sub-tables miss them (checked in the sub-tables: "names of
+  entrepreneurs, companies, money requested" shows no `people.name`; "store with the largest
+  area" no `store.area_size`; "ids, names, FDA status of medicines" no `medicine.name`) — the
+  projection shows join keys, filter columns and the top-4 *lexically* similar columns only.
+  The mock reader hides this; a real reader cannot answer without the column. **Open decision
+  before RL with the real reader:** widen the projection (all columns of visited tables while
+  the budget allows, or more/embedding-ranked columns) — an environment change, so G-6 and
+  the BC/PPO numbers would be rerun. The P4 gate run reports `answer_in_subtable` and
+  `em_when_answer_shown` to separate projection loss from reader errors.
+- **Deferred:** embedding similarity for candidate ranking in the environment (changes the
+  action set and every G-6 number); BC demonstrations at 1024-d need float16 or per-minibatch
+  featurisation before the bge-m3 BC rerun (P7 note).
 - Reader interface with on-disk cache keyed by hash(reader, prompt). Implementations:
   - `mock`: returns the gold answer iff the sub-table is sufficient (a free reward proxy for debugging RL);
   - `hf`: transformers, any size, for local smoke tests;
@@ -222,17 +253,33 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - Cross-entropy on canonical oracle trajectories; this is also the RL initialisation.
 - **Gate:** BC beats the heuristic on dev join-path accuracy (mock reader first, then the real reader).
 
-### P8 — PPO (laptop with mock → molab with the real reader) — CODE DONE 2026-11-17; gate G-8 NOT YET READ
+### P8 — PPO (laptop with mock → molab with the real reader) — CODE DONE 2026-11-17; gate G-8 FAILED (read 2026-11-18)
 - **Built:** `algos/ppo.py`, the RL loop `train.run_rl` (curriculum, `--resume`, `train.jsonl` +
   `metrics.jsonl`), `selectors/oracle.py` (gold-path reference), candidate memoisation in
   `rollout.collect` (`cand_cache`), `configs/experiments/ppo.yaml`. 98 tests pass, including PPO
   overfitting the fixture question through the real entry point (G-8 in miniature).
-- **Runs started, results not yet read or recorded** (laptop, data-v2 Spider+MMQA relaxed, `hash`
-  encoder, mock reader): `runs/g8-r1`, `runs/g8-r0` (G-8: 20 reachable questions, random start,
-  150 iterations; logs `runs/g8-R1.log`, `runs/g8-R0.log`) and `runs/ppo-relaxed-r1-s0`,
-  `runs/ppo-relaxed-r0-s0` (from `runs/bc-relaxed-s0/policy.pt`, 100 iterations; logs
-  `runs/ppo-R1.log`, `runs/ppo-R0.log`). Read each run's `result.json`: G-8 passes if
-  `train_pool_greedy.return` ≈ `train_pool_gold_path.return`.
+- **First runs** (laptop CPU, data-v2 Spider+MMQA relaxed, `hash` encoder, mock reader, seed 0;
+  a pipeline check, not a reportable result). G-8 passes if `train_pool_greedy.return` ≈
+  `train_pool_gold_path.return`:
+
+  | Run | Start | Pool / iterations | Greedy return (EM) | Gold-path return (EM) | Eval EM start → best | Eval path match | Reader calls | Minutes |
+  |---|---|---|---|---|---|---|---|---|
+  | `g8-r1` (R1) | random | 20 / 150 | 0.79 (80%) | 0.99 (100%) | 0% → 80% (train pool) | 55% | 1,442 | 32 |
+  | `g8-r0` (R0) | random | 20 / 150 | 0.55 (55%) | 0.99 (100%) | 0% → 70% (train pool) | 35% | 1,308 | 31 |
+  | `ppo-relaxed-r1-s0` | BC | 3,149 / 100 | 0.49 (51%) on 500 train | 0.81 (83%) | dev 37.3% → 47.8% (iter 40) | dev 25.3% → 28.0% | 8,059 | 25 |
+  | `ppo-relaxed-r0-s0` | BC | 3,149 / 100 | 0.51 (53%) on 500 train | 0.81 (83%) | dev 37.3% → 48.7% (iter 100) | dev 25.3% → 26.9% | 8,044 | 24 |
+
+- **Reading:** (1) **G-8 fails** — policy entropy collapses long before the pool is solved
+  (R1: 1.84 → 0.26 by iteration 61 → 0.07; R0: → 0.04 by iteration 61 and ≈ 0 after), so PPO
+  locks into wrong paths it never revisits; R0 also degrades late (sampled return 0.47 at
+  iteration 136). R1 > R0 here, as shaping should give. (2) From BC, dev EM rises ~11 points
+  but **join-path accuracy barely moves** and sub-tables grow (235 → 257 / 316 tokens): with the
+  mock reader a sub-table that *contains* the gold rows counts as correct, so PPO gains by keeping
+  more rows, and λ_c = 0.1 is too small to stop it. R0 and R1 are indistinguishable (one seed).
+  This is a reward-design warning for the real reader, not yet a finding.
+- **To fix G-8 (laptop only, mock reader; see §4b track A):** higher / non-decaying entropy
+  coefficient, fewer PPO epochs or a smaller actor learning rate, an approximate-KL early stop,
+  check the learnable temperature (it can sharpen the softmax on its own); rerun G-8 for R1 and R0.
 - Original task list:
 - PPO-Clip with GAE, value clipping, entropy, KL to BC (report Table 4 defaults).
 - **Gate G-8:** overfits 20 questions to return ≈ 1.0 (mock reader). Then R0 vs R1 runs.
@@ -277,6 +324,54 @@ eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index
 - **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
   10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
   embedding similarity (P4) and a runtime exact-value probe.
+
+## 4b. Road to P9 — three independent tracks (agreed 2026-11-18)
+
+P9 (GRPO + the 2×2 main runs) starts once all three are done; they share no code paths and can
+proceed in parallel. All figures are **run time (wall-clock execution) only**; coding is done
+with an agent and is not the bottleneck. Estimates (2026-11-18) are rough: laptop CPU numbers
+come from the P7/P8 runs; GPU numbers are typical figures for a 7B reader and bge-m3 until the P4
+throughput notebook measures them.
+
+| Track | Step | Laptop (16 CPU cores, RTX 4060 8 GB) | molab (RTX 6000 Pro 96 GB) |
+|---|---|---|---|
+| **A. G-8 fix** | sweep of ~8 G-8 runs (~30 min each, 4 in parallel) | 2–4 h | no gain: CPU-bound (featurise + 2.3M-param MLP) |
+| | rerun PPO from BC, R1 + R0 in parallel | ~30 min | — |
+| | **Track A total** | **≈ 2.5–4.5 h** | — |
+| **B. BIRD look-ahead** | fetch BIRD DBs from HF | not possible (32 GB at ~370 KB/s ≈ 25 h; rule: no BIRD locally) | ~0.5 h |
+| | build SQLite indexes on join/anchor columns | — | ~1 h |
+| | push `data-v4` (~32 GB) | — | 0.5–1.5 h |
+| | `analysis.coverage --family bird` | — | ~1 h |
+| | **Track B total** (index route; a row-count cap alone needs only the fetch + check, ~1.5 h) | — | **≈ 3–5 h, one session; GPU unused** |
+| **C. P4 + P6** | one-time setup: CUDA torch, 7B reader, bge-m3 (~10 GB) | 7–8 h download; 7B only in 4-bit; vLLM not native on Windows | ~10–15 min |
+| | embedding cache: Spider+MMQA ≈ 214k texts | 10–20 min | 2–4 min |
+| | embedding cache: BIRD, est. 1–2M texts | 1.5–3 h | 15–30 min |
+| | P4 gate: oracle selector + reader, 200 dev questions | ~5 min | ~1 min + ~5 min vLLM start-up |
+| | P6 baselines: 4 selectors × both tiers ≈ 3.4k reader calls | 1–2 h | ~5 min |
+| | BC rerun with bge-m3, both tiers | 1–2 h | 40–80 min |
+| | **Track C total** | **≈ 11–16 h** (half of it downloads) | **≈ 1.5–2.5 h** |
+
+Reader throughput behind these: laptop ~2–3k calls/h (HF transformers, 4-bit); molab ~30–100k
+calls/h (vLLM, bf16, batched).
+
+**P9 preview** (measured: 100 PPO iterations × 128 questions ≈ 8k reader calls + ~25 min CPU):
+one 300-iteration run ≈ 24k calls + ~75 min env/update → laptop ~10 h per run (12-run grid
+{PPO, GRPO} × {R0, R1} × 3 seeds ≈ 5 days nonstop — impractical); molab ~1.5–2 h per run,
+grid ≈ 20–25 h, i.e. 2–3 sessions run one at a time.
+
+**Kaggle (2× T4, estimates):** reader ~5–15k calls/h (vLLM fp16, tensor-parallel over both T4s
+or one 4-bit replica per T4; T4 has no bf16 and no FlashAttention-2); embedding cache ~5–10 min
+(Spider+MMQA) / ~45–90 min (BIRD); P6 baselines ~15–40 min; one P9 run ≈ 3.5–7 h (reader 2–5 h +
+env/update on 4 slower cores), so ~4–8 runs per weekly quota. **Fairness rule:** runs compared in
+one table must use the same reader weights, precision and vLLM version on every platform (run
+the reader in fp16 on molab too, or the same 4-bit checkpoint everywhere), and the reader `id`
+must include the precision so cache shards never mix.
+
+**Run time to reach P9:** on molab ≈ 2 h (C) + 3–5 h (B), plus ~3–4 h of A on the laptop in
+parallel, i.e. about one molab day. Laptop-only cannot reach P9 (B needs molab; C would take
+~11–16 h and the P9 grid ~5 days). With Kaggle in the mix: C runs on Kaggle while B runs on
+molab (same ~one day, but in parallel); the P9 grid splits ~8 runs molab / ~4 runs Kaggle,
+≈ 13–17 h of molab instead of 20–25 h, finishing within about a week of quota.
 
 ## 4. Things we will measure early because they can change the plan
 

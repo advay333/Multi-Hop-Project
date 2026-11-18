@@ -5,13 +5,14 @@ A reader answers a question from a serialised sub-table. `CachedReader` wraps an
   - a cache keyed by sha256(reader id + prompt) (readers decode greedily, so answers are fixed);
   - a call counter: only cache misses are reader calls, the unit all RL curves are plotted in;
   - an optional append-only shard file `reader/<reader>/<run_id>.jsonl` (DESIGN.md §4.4).
-The real readers (`hf`, `vllm`) are added in P4; they implement only `id` and `read_batch`.
+The real readers (`hf`, `vllm`, P4) implement only `id` and `read_batch`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 from mhtable.readers.prompt import build_prompt
@@ -37,6 +38,7 @@ class CachedReader:
         self.cache: dict[str, str] = {}
         self.calls = 0  # cache misses = real reader calls
         self.hits = 0
+        self.seconds = 0.0  # wall-clock time inside the underlying reader (throughput = calls / seconds)
         self.shard_path = Path(shard_path) if shard_path else None
         for p in tuple(preload) + ((self.shard_path,) if self.shard_path and self.shard_path.exists() else ()):
             self.load_shard(p)
@@ -72,8 +74,10 @@ class CachedReader:
         called = [False] * len(keys)
         if todo:
             idx = list(todo.values())
+            t0 = time.time()
             answers = self.reader.read_batch([questions[i] for i in idx], [subtables[i] for i in idx],
                                              [metas[i] for i in idx] if meta else None)
+            self.seconds += time.time() - t0
             if len(answers) != len(idx):
                 raise RuntimeError(f"reader {self.reader.id} returned {len(answers)} answers for {len(idx)} prompts")
             for i, ans in zip(idx, answers):

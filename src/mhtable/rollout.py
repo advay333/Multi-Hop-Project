@@ -32,10 +32,10 @@ import numpy as np
 import torch
 
 from mhtable.featurise import Featuriser, question_text
-from mhtable.metrics import em_norm
+from mhtable.metrics import answer_in_subtable, em_norm, item_counts, set_f1
 from mhtable.readers.base import CachedReader, Reader
 from mhtable.rewards import RewardConfig, assemble
-from mhtable.sufficiency import path_match, sufficient
+from mhtable.sufficiency import entity_overlap, path_match, sufficient
 from mhtable.types import Action, GoldRecord, Instance, State, Step, Trajectory
 
 MODES = ("sample", "argmax")
@@ -119,11 +119,13 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
             mode: str = "sample", oracle_mode: str = "off",
             golds: Mapping[str, GoldRecord] | None = None, group_size: int = 1,
             start_after_gold_steps: int = 0, reward_cfg: RewardConfig | None = None,
-            generator: torch.Generator | None = None, cand_cache: dict | None = None) -> list[Trajectory]:
+            generator: torch.Generator | None = None, cand_cache: dict | None = None,
+            detail: bool = False) -> list[Trajectory]:
     """Run `group_size` episodes per instance. Trajectories come back grouped: the rollouts of
     instances[i] are at positions i*group_size .. (i+1)*group_size - 1. `cand_cache` (a dict the
     caller keeps) lets candidate enumerations be reused across calls; without it they are
-    shared only inside this call."""
+    shared only inside this call. `detail=True` (needs gold) adds the full metric suite to
+    `traj.info`: set_f1, answer_in_subtable, join-edge / filter counts, per-hop entity overlap."""
     cand_cache = {} if cand_cache is None else cand_cache
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
@@ -179,7 +181,8 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
         m = env.materialise(final)
         mats.append(m)
         tr.subtable, tr.subtable_tokens = m.text, m.tokens
-        tr.info.update(visited=list(final.visited), n_rows=final.n_rows, rows_shown=m.rows_shown, overflow=m.overflow)
+        tr.info.update(visited=list(final.visited), n_rows=final.n_rows, rows_shown=m.rows_shown, overflow=m.overflow,
+                       columns=list(m.columns))
         if use_gold:
             gold = golds[tr.instance_id]
             tr.info["sufficient"] = sufficient(env, final, m, gold, suff_cache.setdefault(final.instance.db_ref, {}))
@@ -201,6 +204,12 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
         for tr, st in zip(trajs, states):
             gold = golds[tr.instance_id]
             tr.info["r_ans"] = em_norm(tr.answer, gold.gold_answer)
+            if detail:  # the full metric suite (evaluation); costs one extra SQL query per episode
+                final = st[-1]
+                tr.info.update(set_f1=set_f1(tr.answer, gold.gold_answer),
+                               answer_in_subtable=answer_in_subtable(tr.subtable, gold.gold_answer),
+                               hops=entity_overlap(env, final, gold, suff_cache.setdefault(final.instance.db_ref, {})),
+                               **item_counts(final.joins, final.anchors, gold.gold_edges, gold.gold_anchors))
             if oracle_mode == "reward":
                 assemble(tr, st, gold, tr.info["r_ans"], reward_cfg, budget)
     return trajs

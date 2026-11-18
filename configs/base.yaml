@@ -14,13 +14,16 @@ env:
   edges: inferred       # inferred | declared
   edge_threshold: 0.6667  # min omega for inferred joins; keeps 98% of gold joins on train
   episode_tables: all   # all tables of the database; "gold_plus_k" is a later ablation
+  tokenizer: null       # budget counted in: null = 3.5 chars/token | a model name | reader (= reader.model)
 
 reader:
-  name: mock            # debugging only (needs gold); hf / vllm arrive in P4
+  name: mock            # debugging only (needs gold); real readers: hf | vllm (configs/experiments/eval.yaml)
 
 encoder:
-  name: hash            # lexical stand-in for tests and smoke runs; bge-m3 arrives in P4
+  name: hash            # lexical stand-in for tests and smoke runs
   dim: 64
+  # real encoder: a frozen cache built by `python -m mhtable.encoders.build_cache`, e.g.
+  # cache: hf:embeddings/bge-m3/spider_mmqa.npz    (a list loads several families)
 
 featurise:
   header_ablation: false  # true: table/column names -> table_i / col_j (robustness study)

@@ -26,6 +26,7 @@ from mhtable.data.schema import SchemaGraph
 from mhtable.env.actions import ActionConfig, EpisodeContext, enumerate_actions
 from mhtable.env.index import CellSearch, DbIndex
 from mhtable.env.text import LexicalSimilarity, Similarity
+from mhtable.env.tokens import make_counter
 from mhtable.sqlrender import column_sql, from_where, table_sql
 from mhtable.types import Action, Instance, State
 
@@ -34,7 +35,8 @@ from mhtable.types import Action, Instance, State
 class EnvConfig:
     actions: ActionConfig = field(default_factory=ActionConfig)
     budget_tokens: int = 4096
-    chars_per_token: float = 3.5  # token estimate until the reader's tokenizer is plugged in (P4)
+    chars_per_token: float = 3.5  # look-ahead token estimate; also the budget count when tokenizer is None
+    tokenizer: str | None = None  # model whose tokenizer counts the sub-table budget (env/tokens.py)
     lookahead_cap: int = 100_000  # COUNT(*) is capped here (counts above are reported as the cap)
     lookahead_timeout_s: float = 2.0  # a look-ahead that times out reports -1 (unknown)
     project_top_columns: int = 4  # extra question-relevant columns shown besides path columns
@@ -91,6 +93,7 @@ class TableEnv:
         self.cfg = cfg or EnvConfig()
         self.data = data or EnvData()
         self.sim = sim or LexicalSimilarity()
+        self.counter = make_counter(self.cfg.tokenizer, self.cfg.chars_per_token)
         self._ctx: dict[str, EpisodeContext] = {}
         self._con: dict[str, object] = {}
 
@@ -214,14 +217,24 @@ class TableEnv:
                        30.0, self.cfg.max_fetch_rows + 1)
         total = s.n_rows if s.n_rows >= 0 else len(rows)
         text = "\n".join(lines)
-        used = len(text) / self.cfg.chars_per_token
-        shown = 0
-        for r in rows:
-            line = "| " + " | ".join("" if v is None else str(v).replace("|", "/").replace("\n", " ") for v in r) + " |"
-            cost = (len(line) + 1) / self.cfg.chars_per_token
-            if used + cost > budget:
+        used = self.counter.count(text)
+        shown, block, full = 0, 256, False
+        for k in range(0, len(rows), block):  # count in blocks: the budget usually fills early
+            part = ["| " + " | ".join("" if v is None else str(v).replace("|", "/").replace("\n", " ") for v in r) + " |"
+                    for r in rows[k:k + block]]
+            for line, cost in zip(part, self.counter.count_many(["\n" + x for x in part])):
+                if used + cost > budget:
+                    full = True
+                    break
+                text += "\n" + line
+                used += cost
+                shown += 1
+            if full:
                 break
-            text += "\n" + line
-            used += cost
-            shown += 1
+        if self.counter.exact:  # per-line counts can differ from the joined text by a token at a seam
+            used = self.counter.count(text)
+            while used > budget and shown > 0:
+                text = text.rsplit("\n", 1)[0]
+                shown -= 1
+                used = self.counter.count(text)
         return Materialised(text, int(used), max(total, len(rows)), shown, cols, shown < len(rows))

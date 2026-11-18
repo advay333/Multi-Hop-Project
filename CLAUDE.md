@@ -53,12 +53,22 @@ short-horizon, small-action regime?
   `train.device` (installed torch is CPU-only, so the RTX 4060 is unused). Runs on data-v2
   Spider+MMQA, hash encoder + mock reader. **Gate G-8 (overfit 20 questions) not passed:** R1
   80% / R0 55% vs ceiling 100% — entropy collapses early. From the BC checkpoint, dev EM 37% →
-  ~48% (R1 and R0 indistinguishable, one seed), mostly by taking larger sub-tables. PLAN's P8
-  block does not record these results yet.
-- **Next phases:** laptop-only: fix G-8, P6 selectors (truncate, random rows, heuristic) with the
-  mock reader, P9 GRPO code. Needs molab: the rest of P4 (hf / vLLM readers,
-  bge-m3 encoder + embedding cache, full metric suite, reader tokenizer in `materialise`) and
-  every real-reader gate. Only one molab run at a time.
+  ~48% (R1 and R0 indistinguishable, one seed), mostly by taking larger sub-tables (recorded in
+  PLAN P8).
+- **P4 code — done 2026-11-18** (107 tests + 2 `network` tests; PLAN P4): `vllm` / `hf` readers
+  (`readers/llm.py` shared), reader tokenizer in `materialise` (`env.tokenizer: reader`), bge-m3
+  `encoders/st.py` + `encoders/build_cache.py`, metric suite, `evaluate.py`,
+  `configs/experiments/eval.yaml`, molab notebook `notebooks/p4_reader.py`. Gate = that
+  notebook's run (not yet done). **Open finding:** the projection often hides the answer columns
+  even on the gold path (dry run answer_in_subtable 69% strict / 48% relaxed) — decide on
+  widening it before real-reader RL (PLAN P4).
+- **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
+  mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
+  embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the
+  critical path. §4b has laptop vs molab vs Kaggle run-time estimates. Only one molab run at a time.
+- **Kaggle (free, 2× T4) is a second GPU box** (PLAN §1, §4b): embedding cache, baselines,
+  part of the P9 grid. Same reader weights/precision/vLLM version on every platform for any
+  compared runs.
 - Always track **strict and relaxed action tiers side by side** (user's request).
 
 ## Where things live
@@ -76,7 +86,8 @@ short-horizon, small-action regime?
 - **Compute: molab now; Prajna HPC once login works** (see the section below). **molab** (marimo notebooks in `notebooks/`, which only clone the GitHub repo
   `advay333/Multi-Hop-Project`, install it and run one `python -m mhtable...` command):
   `source_data.py`, `build_data.py` (`--family spider_mmqa|bird`), `build_index.py`,
-  `rebuild_v3.py` (whole data-v3 rebuild + verification + tag).
+  `rebuild_v3.py` (whole data-v3 rebuild + verification + tag), `p4_reader.py` (vLLM reader
+  smoke test, bge-m3 embedding cache, P4 gate).
 - Laptop: Windows, RTX 4060 8 GB, slow network (~370 KB/s) — development and unit tests only;
   never download BIRD databases (32 GB) locally.
 

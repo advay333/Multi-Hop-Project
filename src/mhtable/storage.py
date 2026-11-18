@@ -115,3 +115,25 @@ def tag(repo: str, name: str, message: str = "") -> None:
 def db_path(db_ref: str, revision: str | None = None) -> Path:
     """`spider/concert_singer` -> local path of that SQLite file, fetched on first use."""
     return fetch("data", f"db/{db_ref}.sqlite", revision=revision)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m mhtable.storage push <repo> <local file or folder> <path in repo> [-m MESSAGE]`
+    — used by the notebooks to upload results (e.g. an evaluation run to mhtable-runs)."""
+    import argparse
+
+    p = argparse.ArgumentParser(description=main.__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    up = sub.add_parser("push")
+    up.add_argument("repo", choices=sorted(REPOS))
+    up.add_argument("local")
+    up.add_argument("path_in_repo")
+    up.add_argument("-m", "--message", default=None)
+    args = p.parse_args(argv)
+    sha = push(args.repo, args.local, args.path_in_repo, args.message or f"upload {args.path_in_repo}")
+    print(f"pushed {args.local} -> {repo_id(args.repo)}/{args.path_in_repo} ({sha[:10]})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -75,17 +75,37 @@ def git_dirty() -> bool | None:
         return None
 
 
-def build_env(cfg: Config, data_dir=None, index_dir=None) -> TableEnv:
+def env_tokenizer(cfg: Config) -> str | None:
+    """`env.tokenizer`: null (character estimate) | a model name | "reader" (the reader's model)."""
+    tok = cfg.get_path("env.tokenizer")
+    if tok == "reader":
+        tok = cfg.get_path("reader.model")
+        if not tok:
+            raise SystemExit("env.tokenizer=reader needs reader.model (the mock reader has no tokenizer)")
+    return tok or None
+
+
+def build_env(cfg: Config, data_dir=None, index_dir=None, tier: str | None = None) -> TableEnv:
     e = cfg.env
-    actions = ActionConfig(horizon=e.horizon, tier=e.tier, edges=e.edges, edge_threshold=e.edge_threshold)
+    actions = ActionConfig(horizon=e.horizon, tier=tier or e.tier, edges=e.edges, edge_threshold=e.edge_threshold)
     data = EnvData(data_dir, index_dir, revision=cfg.get_path("data.revision"))
-    return TableEnv(EnvConfig(actions=actions, budget_tokens=e.budget_tokens), data)
+    return TableEnv(EnvConfig(actions=actions, budget_tokens=e.budget_tokens, tokenizer=env_tokenizer(cfg)), data)
+
+
+def resolve_cache_paths(spec) -> list[Path]:
+    """`encoder.cache`: a local .npz, `hf:<path in mhtable-cache>`, or a list of either."""
+    from mhtable import storage
+
+    out = []
+    for p in [spec] if isinstance(spec, str) else list(spec):
+        out.append(storage.fetch("cache", p[3:]) if str(p).startswith("hf:") else Path(p))
+    return out
 
 
 def build_featuriser(cfg: Config, env: TableEnv) -> Featuriser:
     enc = dict(cfg.encoder)
     cache_path = enc.pop("cache", None)  # a pre-built embedding cache (P4); otherwise encode on first use
-    cache = EmbCache.load(cache_path) if cache_path else EmbCache.live(build("encoder", enc))
+    cache = EmbCache.load(resolve_cache_paths(cache_path)) if cache_path else EmbCache.live(build("encoder", enc))
     return Featuriser(env, cache, FeatConfig(header_ablation=bool(cfg.get_path("featurise.header_ablation", False))))
 
 

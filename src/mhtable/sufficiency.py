@@ -69,3 +69,52 @@ def sufficient(env, state: State, mat, gold: GoldRecord, _cache: dict | None = N
         if not (want <= mine if monotone else want == mine):
             return False
     return True
+
+
+def gold_hops(gold: GoldRecord) -> dict[str, int]:
+    """Gold table -> hop index along the canonical trajectory: the start table (SEED or first
+    ANCHOR) is hop 0, each JOIN adds the next hop."""
+    out: dict[str, int] = {}
+    for a in gold.gold_trajectory:
+        if a.kind in ("SEED", "ANCHOR", "JOIN") and a.table and a.table.lower() not in out:
+            out[a.table.lower()] = len(out)
+    return out
+
+
+def entity_overlap(env, state: State, gold: GoldRecord, _cache: dict | None = None) -> list[dict]:
+    """Per-hop entity recall / precision vs the gold relation E* (report Part D, diagnostic).
+
+    For each gold table: recall = share of its gold row ids still in the policy's final relation,
+    precision = share of the policy's row ids of that table that are gold. A gold table the policy
+    never visited has recall 0 and no precision. Empty list when the gold entity set was truncated
+    or the comparison is too large / times out (unknown, not zero)."""
+    es = gold.gold_entity_sets[-1] if gold.gold_entity_sets else None
+    if es is None or es.get("truncated"):
+        return []
+    hops = gold_hops(gold)
+    tables = sorted(es["rowids"])
+    seen = [t for t in tables if t in state.visited]
+    mine: dict[str, set] = {}
+    if seen:
+        try:
+            con = env._conn(state.instance.db_ref)
+            schema = env.data.schema(state.instance.db_ref)
+            no_rowid = _no_rowid_tables(con, _cache if _cache is not None else {})
+            sql = (f"SELECT DISTINCT {rowid_select(schema, seen, no_rowid)} "
+                   f"{from_where(schema, state.visited, state.joins, state.anchors)}")
+            rows = run(con, sql, TIMEOUT_S, COMPARE_CAP + 1)
+        except (QueryTimeout, sqlite3.Error):
+            return []
+        if len(rows) > COMPARE_CAP:
+            return []
+        for i, t in enumerate(seen):
+            mine[t] = {r[i] for r in rows}
+    out = []
+    for t in tables:
+        want = set(es["rowids"][t])
+        got = mine.get(t)
+        hit = len(want & got) if got is not None else 0
+        out.append({"table": t, "hop": hops.get(t, len(hops)),
+                    "recall": round(hit / len(want), 4) if want else None,
+                    "precision": round(hit / len(got), 4) if got else None})
+    return out

@@ -311,8 +311,9 @@ quoted phrases / "the letter x" / partial matches / date prefixes (`release_date
 **Look-ahead:** every candidate carries the capped COUNT(*) of the relation it leads to and an
 estimated token count — cardinality estimation, not gold information.
 
-`materialise` projects onto join keys, anchor columns and the top-4 question-relevant columns
-of the visited tables, orders rows deterministically by rowid, and cuts rows to fit B tokens
+`materialise` projects onto join keys, anchor columns and the other columns of the visited
+tables ranked by question relevance — as many as let all rows fit B (estimated), at least 4
+(`project_all_columns`; off = exactly the top 4, the pre-2026-11-18 behaviour) — orders rows deterministically by rowid, and cuts rows to fit B tokens
 (`overflow` flag). The budget is counted by `env/tokens.py`: 3.5 chars/token by default
 (`env.tokenizer: null`, mock-reader runs), or the reader's own tokenizer (`env.tokenizer: reader`
 or a model name; rows are counted in blocks, then the joined text is re-counted so the result is

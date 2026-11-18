@@ -39,7 +39,8 @@ class EnvConfig:
     tokenizer: str | None = None  # model whose tokenizer counts the sub-table budget (env/tokens.py)
     lookahead_cap: int = 100_000  # COUNT(*) is capped here (counts above are reported as the cap)
     lookahead_timeout_s: float = 2.0  # a look-ahead that times out reports -1 (unknown)
-    project_top_columns: int = 4  # extra question-relevant columns shown besides path columns
+    project_top_columns: int = 4  # minimum extra question-relevant columns shown besides path columns
+    project_all_columns: bool = True  # show every other column of visited tables while all rows fit B
     max_fetch_rows: int = 5000
 
 
@@ -145,10 +146,12 @@ class TableEnv:
         except QueryTimeout:
             return -1
 
-    def _row_tokens(self, s: State, ctx: EpisodeContext) -> float:
-        cols = self.projection(s, ctx)
+    def _cols_tokens(self, cols: list[str], ctx: EpisodeContext) -> float:
         chars = sum(ctx.index.columns[c].avg_chars + 3 if c in ctx.index.columns else 8 for c in cols)
         return chars / self.cfg.chars_per_token
+
+    def _row_tokens(self, s: State, ctx: EpisodeContext, n_rows: int | None = None) -> float:
+        return self._cols_tokens(self.projection(s, ctx, n_rows), ctx)
 
     def candidate_actions(self, s: State) -> list[Action]:
         """Legal actions in `s`, each with look-ahead rows/tokens of the state it leads to."""
@@ -160,7 +163,7 @@ class TableEnv:
                 continue
             nxt = self.apply(s, a)
             n = self._relation_count(nxt, ctx.schema)
-            tok = int(max(n, 0) * self._row_tokens(nxt, ctx))
+            tok = int(max(n, 0) * self._row_tokens(nxt, ctx, n))
             out.append(Action(a.kind, a.table, a.anchor, a.edge, lookahead_rows=n, lookahead_tokens=tok))
         return out
 
@@ -171,14 +174,18 @@ class TableEnv:
         nxt = self.apply(s, a)
         n = a.lookahead_rows if a.lookahead_rows else self._relation_count(nxt, ctx.schema)
         nxt.n_rows = n
-        nxt.est_tokens = int(max(n, 0) * self._row_tokens(nxt, ctx))
+        nxt.est_tokens = int(max(n, 0) * self._row_tokens(nxt, ctx, n))
         nxt.relation_sql = from_where(ctx.schema, nxt.visited, nxt.joins, nxt.anchors)
         return nxt, nxt.t >= self.cfg.actions.horizon
 
     # ------------------------------------------------------------------ materialisation
-    def projection(self, s: State, ctx: EpisodeContext | None = None) -> list[str]:
-        """Columns shown to the reader: join keys and anchor columns, plus the top question-relevant
-        columns of the visited tables (report C.3)."""
+    def projection(self, s: State, ctx: EpisodeContext | None = None, n_rows: int | None = None) -> list[str]:
+        """Columns shown to the reader (report C.3): join keys and anchor columns, plus the other
+        columns of the visited tables ranked by question relevance. With `project_all_columns`
+        (default) as many of those are kept as let all `n_rows` rows fit the budget (estimated),
+        never fewer than `project_top_columns`; otherwise exactly the top `project_top_columns`.
+        Showing every column the budget allows keeps answer columns whose names do not match the
+        question words (e.g. `people.name` for "names of entrepreneurs")."""
         ctx = ctx or self._context(s)
         cols = []
         for e in s.joins:
@@ -186,8 +193,18 @@ class TableEnv:
                 cols += list(p)
         cols += [a.column for a in s.anchors]
         extra = [f"{t}.{c.lower()}" for t in s.visited for c in ctx.schema.columns.get(t, [])]
-        extra.sort(key=lambda k: -ctx.column_scores.get(k, 0.0))
-        cols += extra[:self.cfg.project_top_columns]
+        extra = [k for k in extra if k not in cols]
+        extra.sort(key=lambda k: -ctx.column_scores.get(k, 0.0))  # stable: ties keep schema order
+        k = min(self.cfg.project_top_columns, len(extra))
+        if self.cfg.project_all_columns:
+            if n_rows is None or n_rows < 0:
+                n_rows = s.n_rows
+            if n_rows >= 0:
+                k = len(extra)
+                while k > self.cfg.project_top_columns and \
+                        n_rows * self._cols_tokens(cols + extra[:k], ctx) > self.cfg.budget_tokens:
+                    k -= 1
+        cols += extra[:k]
         seen, out = set(), []
         for t in s.visited:  # table visit order, then schema column order
             for c in ctx.schema.columns.get(t, []):
@@ -203,7 +220,7 @@ class TableEnv:
         if not s.visited:
             return Materialised("", 0, 0, 0, [], False)
         schema = ctx.schema
-        cols = self.projection(s, ctx)
+        cols = self.projection(s, ctx, s.n_rows)
         header = "| " + " | ".join(column_sql(schema, k).replace('"', "") for k in cols) + " |"
         lines = [header, "|" + "---|" * len(cols)]
         order = ", ".join(f"{table_sql(schema, t)}.rowid" for t in s.visited)

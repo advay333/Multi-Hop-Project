@@ -59,9 +59,10 @@ short-horizon, small-action regime?
   (`readers/llm.py` shared), reader tokenizer in `materialise` (`env.tokenizer: reader`), bge-m3
   `encoders/st.py` + `encoders/build_cache.py`, metric suite, `evaluate.py`,
   `configs/experiments/eval.yaml`, molab notebook `notebooks/p4_reader.py`. Gate = that
-  notebook's run (not yet done). **Open finding:** the projection often hides the answer columns
-  even on the gold path (dry run answer_in_subtable 69% strict / 48% relaxed) — decide on
-  widening it before real-reader RL (PLAN P4).
+  notebook's run (not yet done; also builds the bge-m3 cache for spider_mmqa and bird).
+  **Projection fixed 2026-11-18:** `materialise` now shows every column of the visited tables
+  that fits the budget (`env.project_all_columns`); answer_in_subtable on the gold path 69% → 91%
+  strict, 48% → 88% relaxed (PLAN P4).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the

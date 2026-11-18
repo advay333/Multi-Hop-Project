@@ -21,7 +21,8 @@ def _():
         2. **Smoke test**: oracle selector + real reader on 5 dev questions (strict tier) —
            checks the vLLM install and the prompt end to end (~5 min incl. model download).
         3. **Embedding cache**: bge-m3 over every text the featuriser can look up for
-           Spider+MMQA (~214k texts, a few minutes); optional push to `mhtable-cache`.
+           Spider+MMQA (~214k texts, a few minutes); **3b** the same for BIRD (~1–2M texts,
+           ~15–30 min); optional push to `mhtable-cache`.
         4. **P4 gate**: oracle selector + real reader on N dev questions, **both tiers**;
            prints EM, answer coverage, and reader throughput (calls/hour).
         5. **Push the gate run** to `mhtable-runs` (optional).
@@ -142,6 +143,22 @@ def _(mo):
 def _(EMB, embed, mo, os, push_emb, revision, run, sys):
     mo.stop(not embed.value, mo.md("Press **Build the embedding cache** to start."))
     run([sys.executable, "-m", "mhtable.encoders.build_cache", "--family", "spider_mmqa", "--revision", revision.value,
+         "--model", "BAAI/bge-m3", "--out", EMB] + (["--push"] if push_emb.value else []), env=os.environ.copy())
+    return
+
+
+@app.cell
+def _(mo):
+    embed_bird = mo.ui.run_button(label="3b. Build the bge-m3 embedding cache (bird)")
+    embed_bird
+    return (embed_bird,)
+
+
+@app.cell
+def _(EMB, embed_bird, mo, os, push_emb, revision, run, sys):
+    mo.stop(not embed_bird.value, mo.md("Press **Build the embedding cache (bird)** to start. Reads only BIRD's "
+                                        "questions, schemas and index (~1–2M texts), not the 32 GB of databases."))
+    run([sys.executable, "-m", "mhtable.encoders.build_cache", "--family", "bird", "--revision", revision.value,
          "--model", "BAAI/bge-m3", "--out", EMB] + (["--push"] if push_emb.value else []), env=os.environ.copy())
     return
 

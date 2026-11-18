@@ -158,10 +158,15 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   entrepreneurs, companies, money requested" shows no `people.name`; "store with the largest
   area" no `store.area_size`; "ids, names, FDA status of medicines" no `medicine.name`) — the
   projection shows join keys, filter columns and the top-4 *lexically* similar columns only.
-  The mock reader hides this; a real reader cannot answer without the column. **Open decision
-  before RL with the real reader:** widen the projection (all columns of visited tables while
-  the budget allows, or more/embedding-ranked columns) — an environment change, so G-6 and
-  the BC/PPO numbers would be rerun. The P4 gate run reports `answer_in_subtable` and
+  The mock reader hides this; a real reader cannot answer without the column. **Fixed
+  2026-11-18 (user decision):** `EnvConfig.project_all_columns` (default on) shows every other
+  column of the visited tables, most question-relevant first, as long as all rows still fit the
+  budget (estimated), never fewer than the old top 4. Same dry run after the fix:
+  answer_in_subtable **90.8% strict / 87.5% relaxed**, and 0 of the 40 / 42 gold-path
+  Select/List questions miss their answer column (what remains is Count/Numerical answers,
+  which the reader computes); mean tokens 180 → 298 / 305 → 447. The projection only affects
+  `materialise`, not the candidate actions, so G-6 reachability and BC are unchanged; the
+  mock-reader PPO runs of P8 predate the fix (wider rows → more tokens, more overflow). The P4 gate run reports `answer_in_subtable` and
   `em_when_answer_shown` to separate projection loss from reader errors.
 - **Deferred:** embedding similarity for candidate ranking in the environment (changes the
   action set and every G-6 number); BC demonstrations at 1024-d need float16 or per-minibatch

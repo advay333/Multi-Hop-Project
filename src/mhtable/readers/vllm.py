@@ -35,6 +35,12 @@ class VLLMReader(Reader):
         unknown = set(ignored) - HF_ONLY
         if unknown:
             raise TypeError(f"vllm reader: unknown options {sorted(unknown)}")
+        import os
+
+        # Decoding is greedy, so FlashInfer's top-k/top-p sampling kernel is never needed. Without
+        # its precompiled cubins it is JIT-compiled at start-up, which fails on molab's Blackwell
+        # image (system nvcc vs FlashInfer's bundled CCCL headers). Set the variable to 1 to re-enable.
+        os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
         from vllm import LLM, SamplingParams
 
         self.model, self.dtype, self.max_new_tokens = model, dtype, max_new_tokens

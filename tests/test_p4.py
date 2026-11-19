@@ -100,6 +100,15 @@ def test_vllm_reader_call_path(monkeypatch):
     assert st["prompts"] == 2 and st["answers_cut"] == 1 and st["prompts_cut"] == 0
     with pytest.raises(TypeError):
         build("reader", {"name": "vllm", "model": "m", "temprature": 0})
+    r2 = build("reader", {"name": "vllm", "model": "m", "dtype": "float16", "prompt": "p2"})
+    r2.read_batch(["q1?", "q2?"], ["| x |", "| y |"])
+    assert r2.id.endswith(":p2") and r.id.endswith(":p1") and "Do not stop early" in seen["prompts"][0]
+    assert r2.stats.to_dict()["mean_prompt_tokens"] > 0
+    from mhtable.readers import CachedReader
+
+    assert CachedReader(r).key("q", "| x |") != CachedReader(r2).key("q", "| x |")
+    with pytest.raises(ValueError):
+        build("reader", {"name": "vllm", "model": "m", "prompt": "p9"})
 
 
 # ---------------------------------------------------------------- tokenizer in materialise

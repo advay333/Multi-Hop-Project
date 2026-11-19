@@ -384,7 +384,8 @@ not install). Both share `readers/llm.py`: the prompt wrapped in the model's cha
 cut from the end if the prompt would exceed the context window (counted), answer clean-up
 (fences, "Answer:", bullets), `ReaderStats` (prompts, cut prompts, answers cut by
 `max_new_tokens`, seconds, calls/hour) and `reader_id` = backend : model : precision : greedy :
-max tokens : prompt version, so caches from different setups never mix. Each accepts and ignores
+max tokens : prompt version, so caches from different setups never mix. Prompt versions live in
+`readers/prompt.py` (`reader.prompt`: `p1` original, `p2` explicit column/row rules). Each accepts and ignores
 the other's backend-only keys, so one config serves both.
 `CachedReader` (built in P5) adds the cache keyed by `sha256(reader id + prompt)`, the optional
 shard file and the call counter (`calls` = cache misses; identical prompts in one batch are sent

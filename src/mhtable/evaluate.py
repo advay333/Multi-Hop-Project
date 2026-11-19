@@ -111,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--run-id", default=None)
     p.add_argument("--reader-cache", nargs="*", default=[], help="extra reader-answer shards to preload")
     p.add_argument("--reported", action="store_true", help="refuse the mock reader and the oracle selector")
+    p.add_argument("--fresh", action="store_true",
+                   help="delete this run's reader-answer shard first, so every answer is a real reader call "
+                        "(throughput measurements)")
     p.add_argument("overrides", nargs="*", help="config overrides, e.g. reader.dtype=bfloat16")
     args = p.parse_args(argv)
     if args.selector == "policy" and not args.policy:
@@ -129,9 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     def log(msg: str) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
+    if args.fresh:
+        (run_dir / "reader_cache.jsonl").unlink(missing_ok=True)
     t0 = time.time()
     base = build("reader", cfg.reader)
-    log(f"reader {base.id} ready ({time.time() - t0:.0f}s)")
+    load_s = time.time() - t0
+    log(f"reader {base.id} ready ({load_s:.0f}s)")
     reportable = not base.needs_gold and args.selector != "oracle"
     if args.reported and not reportable:
         raise SystemExit("--reported: the mock reader and the oracle selector never produce a reported result")
@@ -147,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     result["reader_stats"] = {"calls": reader.calls, "cache_hits": reader.hits, "seconds": round(reader.seconds, 1),
                               "calls_per_hour": round(3600 * reader.calls / reader.seconds, 1) if reader.seconds else None,
                               **({"backend": stats.to_dict()} if stats is not None else {})}
+    result["reader_load_seconds"] = round(load_s, 1)
     result["minutes"] = round((time.time() - t0) / 60, 2)
     (run_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     head = {t: {k: r.get(k) for k in ("n", "em", "set_f1", "path_match", "em_on_path", "answer_in_subtable",

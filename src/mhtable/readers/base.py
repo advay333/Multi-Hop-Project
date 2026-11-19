@@ -58,7 +58,8 @@ class CachedReader:
                 self.cache[d["key"]] = d["answer"]
 
     def key(self, question: str, subtable: str, meta: dict | None = None) -> str:
-        text = self.reader.id + "\n" + build_prompt(question, subtable) + self.reader.cache_extra(meta)
+        text = (self.reader.id + "\n" + build_prompt(question, subtable, getattr(self.reader, "prompt", "p1"))
+                + self.reader.cache_extra(meta))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def read_batch(self, questions: list[str], subtables: list[str],

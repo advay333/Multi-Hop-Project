@@ -168,6 +168,37 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   `materialise`, not the candidate actions, so G-6 reachability and BC are unchanged; the
   mock-reader PPO runs of P8 predate the fix (wider rows → more tokens, more overflow). The P4 gate run reports `answer_in_subtable` and
   `em_when_answer_shown` to separate projection loss from reader errors.
+- **Gate run (molab, 2026-11-19; `mhtable-runs/runs/p4-gate-oracle-dev200`; code 8d359ee, data-v3,
+  Qwen2.5-7B-Instruct bf16 via vLLM 0.34, RTX PRO 6000):** end-to-end passes. Oracle selector,
+  200 dev questions per tier:
+
+  | Tier | EM | set-F1 | path match | EM on path | answer shown | EM when shown | tokens |
+  |---|---|---|---|---|---|---|---|
+  | strict | 52.0% | 70.4% | 89.5% | 55.9% | 90.9% | 54.9% (n = 175) | 485 |
+  | relaxed | 49.0% | 66.6% | 82.0% | 55.5% | 86.2% | 51.2% (n = 168) | 558 |
+
+  By category (strict EM): Select 69%, List 37%, Count 60%, Numerical 42%; monotone 64% vs
+  non-monotone 41%. **The reader is the main loss:** with the gold path and the answer visible,
+  it is right only ~55% of the time. Of the 79 strict misses with the answer shown: 13 answer
+  with extra or fewer columns than the gold SQL selects (e.g. "Flower Awards | United States |
+  2007" for "which festival"), 17 drop rows from a list, 3 add rows, 45 are wrong (wrong
+  argmax / aggregate, wrong row picked; a few MMQA gold answers include columns the question does
+  not ask for, e.g. "which store" → `doaktown | 28.74`), 1 empty. Throughput was **not**
+  measured (all 400 answers came from a reader-cache shard of an earlier attempt in the same run
+  folder) — smoke run: ~42k calls/h at batch 5.
+- **Embedding caches pushed** (`mhtable-cache embeddings/bge-m3/`, code 8d359ee): spider_mmqa
+  359,015 texts (4,982 questions, 757 DBs, 0.74 GB); bird 2,619,155 texts (5,511 questions,
+  78 DBs, 5.4 GB — too big for laptop RAM/network, molab/Prajna only).
+- **Open decision (reader ceiling):** options — prompt that asks for exactly the requested
+  columns and *all* matching rows; a column-tolerant EM variant as a secondary metric; a larger
+  reader (Qwen2.5-14B/32B fit in 96 GB, not on Kaggle T4s). Decide before P6/P9, since every
+  arm is capped by this ceiling; P6's truncate baseline tells how much selection still adds.
+- **Reader ablation (code 2026-11-19, run pending):** prompt versions (`reader.prompt`: p1 = gate,
+  p2 = exact requested attributes, every matching row, compare all rows; in the reader id and
+  cache key), `evaluate --fresh` (no cached answers, so timing is real), reader load time and
+  token throughput in `result.json`. Notebook `notebooks/reader_ablation.py` runs 7B/14B × p1/p2
+  on the gate's 200 dev questions per tier (bf16, batches of 128 = one RL iteration) and
+  tabulates EM by category plus calls/hour, prompt/answer tokens per second, load time.
 - **Deferred:** embedding similarity for candidate ranking in the environment (changes the
   action set and every G-6 number); BC demonstrations at 1024-d need float16 or per-minibatch
   featurisation before the bge-m3 BC rerun (P7 note).

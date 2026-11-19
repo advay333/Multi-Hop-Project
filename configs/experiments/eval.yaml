@@ -14,6 +14,7 @@ reader:
   name: vllm
   model: Qwen/Qwen2.5-7B-Instruct
   dtype: float16
+  prompt: p1                # readers/prompt.py: p1 (gate) | p2 (explicit column/row rules)
   max_new_tokens: 512
   max_model_len: 6144
   tensor_parallel_size: 1

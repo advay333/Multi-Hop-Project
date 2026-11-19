@@ -29,7 +29,7 @@ VLLM_ONLY = {"max_model_len", "tensor_parallel_size", "gpu_memory_utilization", 
 class HFReader(Reader):
     def __init__(self, model: str = "Qwen/Qwen2.5-7B-Instruct", dtype: str = "float16", max_new_tokens: int = 512,
                  batch_size: int = 8, device: str | None = None, load_in_4bit: bool = False,
-                 max_input_tokens: int = 6144, seed: int = 0, **ignored):
+                 max_input_tokens: int = 6144, seed: int = 0, prompt: str = "p1", **ignored):
         unknown = set(ignored) - VLLM_ONLY
         if unknown:
             raise TypeError(f"hf reader: unknown options {sorted(unknown)}")
@@ -40,7 +40,7 @@ class HFReader(Reader):
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.max_new_tokens, self.batch_size, self.max_input_tokens = max_new_tokens, batch_size, max_input_tokens
-        self.id = reader_id("hf", model, dtype, max_new_tokens, "bnb4" if load_in_4bit else None)
+        self.id = reader_id("hf", model, dtype, max_new_tokens, "bnb4" if load_in_4bit else None, prompt)
         self.tok = AutoTokenizer.from_pretrained(model)
         self.tok.padding_side = "left"  # decoder-only batching
         if self.tok.pad_token is None:
@@ -55,13 +55,14 @@ class HFReader(Reader):
         if not load_in_4bit:
             self.lm.to(self.device)
         self.lm.eval()
+        self.prompt = prompt  # prompt version (readers/prompt.py)
         self.stats = ReaderStats()
 
     def read_batch(self, questions, subtables, meta=None):
         t0 = time.time()
         prompts = []
         for q, s in zip(questions, subtables):
-            text, n, cut = chat_prompt(self.tok, q, s, self.max_input_tokens)
+            text, n, cut = chat_prompt(self.tok, q, s, self.max_input_tokens, self.prompt)
             prompts.append(text)
             self.stats.prompt_tokens += n
             self.stats.prompts_cut += int(cut)
@@ -78,6 +79,9 @@ class HFReader(Reader):
             new = out[:, enc["input_ids"].shape[1]:]
             for j, i in enumerate(idx):
                 ids = new[j].tolist()
+                if self.tok.pad_token_id is not None and self.tok.pad_token_id != eos:
+                    ids = [t for t in ids if t != self.tok.pad_token_id]
+                self.stats.answer_tokens += len(ids[:ids.index(eos) + 1] if eos in ids else ids)
                 self.stats.answers_cut += int(len(ids) >= self.max_new_tokens and eos not in ids)
                 answers[i] = clean_answer(self.tok.decode(ids, skip_special_tokens=True))
         self.stats.prompts += len(prompts)

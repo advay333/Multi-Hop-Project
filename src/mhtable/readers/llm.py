@@ -19,12 +19,17 @@ from dataclasses import asdict, dataclass
 
 from mhtable.readers.prompt import build_prompt
 
-PROMPT_VERSION = "p1"  # bump whenever readers/prompt.py TEMPLATE or chat_prompt changes
+PROMPT_VERSION = "p1"  # default prompt version (readers/prompt.py TEMPLATES)
 
 
-def reader_id(backend: str, model: str, dtype: str, max_new_tokens: int, quantization: str | None = None) -> str:
+def reader_id(backend: str, model: str, dtype: str, max_new_tokens: int, quantization: str | None = None,
+              prompt: str = PROMPT_VERSION) -> str:
+    from mhtable.readers.prompt import TEMPLATES
+
+    if prompt not in TEMPLATES:
+        raise ValueError(f"unknown prompt version {prompt!r}; known: {sorted(TEMPLATES)}")
     q = f":{quantization}" if quantization else ""
-    return f"{backend}:{model}:{dtype}{q}:greedy:max{max_new_tokens}:{PROMPT_VERSION}"
+    return f"{backend}:{model}:{dtype}{q}:greedy:max{max_new_tokens}:{prompt}"
 
 
 @dataclass
@@ -33,12 +38,17 @@ class ReaderStats:
     prompts_cut: int = 0  # sub-table rows dropped to fit the context window
     answers_cut: int = 0  # generation stopped by max_new_tokens
     prompt_tokens: int = 0
+    answer_tokens: int = 0  # generated tokens
     seconds: float = 0.0
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["calls_per_hour"] = round(3600 * self.prompts / self.seconds, 1) if self.seconds > 0 else None
         d["answers_cut_fraction"] = round(self.answers_cut / self.prompts, 4) if self.prompts else 0.0
+        d["prompt_tokens_per_second"] = round(self.prompt_tokens / self.seconds, 1) if self.seconds > 0 else None
+        d["answer_tokens_per_second"] = round(self.answer_tokens / self.seconds, 1) if self.seconds > 0 else None
+        d["mean_prompt_tokens"] = round(self.prompt_tokens / self.prompts, 1) if self.prompts else None
+        d["mean_answer_tokens"] = round(self.answer_tokens / self.prompts, 1) if self.prompts else None
         return d
 
 
@@ -48,9 +58,10 @@ def _render(tok, text: str) -> str:
     return text  # models without a chat template (tiny test models)
 
 
-def chat_prompt(tok, question: str, subtable: str, max_prompt_tokens: int) -> tuple[str, int, bool]:
+def chat_prompt(tok, question: str, subtable: str, max_prompt_tokens: int,
+                version: str = PROMPT_VERSION) -> tuple[str, int, bool]:
     """-> (prompt text, prompt tokens, whether sub-table rows were dropped to fit)."""
-    text = _render(tok, build_prompt(question, subtable))
+    text = _render(tok, build_prompt(question, subtable, version))
     n = len(tok(text, add_special_tokens=False)["input_ids"])
     if n <= max_prompt_tokens:
         return text, n, False
@@ -58,12 +69,12 @@ def chat_prompt(tok, question: str, subtable: str, max_prompt_tokens: int) -> tu
     lo, hi = 2, len(lines)  # keep the header and separator; binary search the rows that fit
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        t = _render(tok, build_prompt(question, "\n".join(lines[:mid])))
+        t = _render(tok, build_prompt(question, "\n".join(lines[:mid]), version))
         if len(tok(t, add_special_tokens=False)["input_ids"]) <= max_prompt_tokens:
             lo = mid
         else:
             hi = mid - 1
-    text = _render(tok, build_prompt(question, "\n".join(lines[:lo])))
+    text = _render(tok, build_prompt(question, "\n".join(lines[:lo]), version))
     return text, len(tok(text, add_special_tokens=False)["input_ids"]), True
 
 

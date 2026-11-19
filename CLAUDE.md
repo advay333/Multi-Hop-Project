@@ -88,7 +88,8 @@ short-horizon, small-action regime?
   `advay333/Multi-Hop-Project`, install it and run one `python -m mhtable...` command):
   `source_data.py`, `build_data.py` (`--family spider_mmqa|bird`), `build_index.py`,
   `rebuild_v3.py` (whole data-v3 rebuild + verification + tag), `p4_reader.py` (vLLM reader
-  smoke test, bge-m3 embedding cache, P4 gate).
+  smoke test, bge-m3 embedding cache, P4 gate), `reader_ablation.py` (7B/14B x prompt p1/p2 on
+  gold sub-tables, with throughput).
 - Laptop: Windows, RTX 4060 8 GB, slow network (~370 KB/s) — development and unit tests only;
   never download BIRD databases (32 GB) locally.
 

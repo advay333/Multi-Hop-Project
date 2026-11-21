@@ -434,6 +434,17 @@ eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index
   **Still to check after the run:** look-ahead timeout (-1) rate on BIRD — the 2 s timeout is
   wall-clock, so -1 features are hardware-dependent; if the rate is not near 0, raise the timeout
   before P9 on BIRD.
+- **Track B molab run (2026-11-21): gate passed, not yet pushed.** Indexes: 41 of 80 BIRD DBs
+  changed, 31.6 -> 35.9 GiB, built in 2 min. Environment check with real SQL, 15 questions per DB:
+  **0 crashes** in every tier/split, materialise timeouts 0; reachability matches the offline G-6
+  (train 87.3% / 79.8% vs 87.4% / 79.5%; bird_dev 78.5% / 73.9% vs 80.1% / 73.6%) — the BIRD
+  real-SQL check of §4a is now done. Look-ahead timeout (-1) rate over all DBs <= 0.9%. Speed on
+  the 6 largest DBs (random episodes, 120 s each): mean look-ahead 0.23-0.66 s -> 0.07-0.31 s,
+  2-7x more episodes; but random-episode timeouts there are still 2-12% (movie_platform 7%,
+  talkingdata 8%, language_corpus 12%). The slowest plans are range or low-cardinality filters
+  (`user_trialist < x`, `app_id > x`, `donation_total > x`) where SQLite, having no statistics,
+  picks a weak index. Next: `sqlindex --analyze` (planner statistics, now also on re-runs), re-profile,
+  then push + tag data-v4 once.
 - **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
   10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
   embedding similarity (P4) and a runtime exact-value probe.

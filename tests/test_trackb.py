@@ -137,3 +137,19 @@ def test_env_lookahead_sql_uses_the_new_indexes(data_dir):
     assert not any("AUTOMATIC" in x for x in plan), plan
     assert any(x.startswith("SEARCH head USING") and "mhx_" in x for x in plan), plan
     assert any(x.startswith("SEARCH management USING") and "mhx_" in x for x in plan), plan
+
+
+def test_analyze_on_rerun_covers_tables_indexed_earlier(data_dir):
+    import sqlite3
+
+    db = data_dir / "db" / f"{REF}.sqlite"
+    data = EnvData(data_dir)
+    idx, schema = data.index(REF)[0], data.schema(REF)
+    before = _walk(_env(data_dir, lookahead_memo=0))
+    index_db(db, idx, schema, min_rows=0)
+    rep = index_db(db, idx, schema, min_rows=0, analyze=True)  # nothing new to create
+    assert rep["created"] == [] and rep["analyzed"]["tables"] > 0
+    con = sqlite3.connect(str(db))
+    assert con.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0] > 0
+    con.close()
+    assert _walk(_env(data_dir, lookahead_memo=0)) == before  # statistics change no result

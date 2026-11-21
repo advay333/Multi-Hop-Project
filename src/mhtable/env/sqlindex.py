@@ -144,7 +144,7 @@ def index_db(db_file: Path, idx: DbIndex, schema: SchemaGraph, dry_run: bool = F
         rep["est_added_bytes"] += estimate_bytes(idx, t, cols)
         leads_by_table[t] |= {names[:i] for i in range(1, len(names) + 1)}
     ro.close()
-    if todo and not dry_run:
+    if (todo or (analyze and our_indexes(db_file))) and not dry_run:
         con = sqlite3.connect(str(db_file))
         con.execute("PRAGMA cache_size=-1000000")  # ~1 GB page cache for the index sorts
         for t, tname, cols, originals in todo:
@@ -153,10 +153,14 @@ def index_db(db_file: Path, idx: DbIndex, schema: SchemaGraph, dry_run: bool = F
                         f"({', '.join(_q(c) for c in originals)})")
             con.commit()
             rep["created"].append({"table": t, "columns": list(cols), "seconds": round(time.time() - t1, 1)})
-        if analyze:
-            for tname in dict.fromkeys(x[1] for x in todo):
+        if analyze:  # every table carrying one of our indexes, also those indexed by an earlier run
+            t1 = time.time()
+            tables = [r[0] for r in con.execute(
+                "SELECT DISTINCT tbl_name FROM sqlite_master WHERE type = 'index' AND name LIKE 'mhx!_%' ESCAPE '!'")]
+            for tname in tables:
                 con.execute(f"ANALYZE {_q(tname)}")
             con.commit()
+            rep["analyzed"] = {"tables": len(tables), "seconds": round(time.time() - t1, 1)}
         con.close()
     elif todo:
         rep["created"] = [{"table": t, "columns": list(cols), "seconds": 0.0} for t, _, cols, _ in todo]

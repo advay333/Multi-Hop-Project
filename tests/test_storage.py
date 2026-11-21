@@ -34,3 +34,27 @@ def test_push_dispatches_file_vs_folder(monkeypatch, tmp_path):
 def test_repos_reachable():
     # Run explicitly with: pytest -m network   (needs HF_TOKEN)
     assert set(storage.ensure_repos()) == set(storage.REPOS)
+
+
+def test_push_large_without_upload_large_folder_skips_files_already_uploaded(tmp_path, monkeypatch):
+    import hashlib
+
+    from mhtable import storage
+
+    (tmp_path / "db" / "bird").mkdir(parents=True)
+    a, b = tmp_path / "db" / "bird" / "a.sqlite", tmp_path / "db" / "bird" / "b.sqlite"
+    a.write_bytes(b"aaa")
+    b.write_bytes(b"bbb")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "junk").write_bytes(b"x")
+
+    class Api:  # huggingface_hub 2.x: no upload_large_folder
+        pass
+
+    pushed = []
+    monkeypatch.setattr(storage, "api", lambda: Api())
+    monkeypatch.setattr(storage, "remote_sha256",
+                        lambda repo, paths, revision=None: {"db/bird/a.sqlite": hashlib.sha256(b"aaa").hexdigest()})
+    monkeypatch.setattr(storage, "push", lambda repo, p, rel, msg: pushed.append(rel))
+    storage.push_large("data", tmp_path)
+    assert pushed == ["db/bird/b.sqlite"]

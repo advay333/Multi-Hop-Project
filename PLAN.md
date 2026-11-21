@@ -443,8 +443,15 @@ eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index
   2-7x more episodes; but random-episode timeouts there are still 2-12% (movie_platform 7%,
   talkingdata 8%, language_corpus 12%). The slowest plans are range or low-cardinality filters
   (`user_trialist < x`, `app_id > x`, `donation_total > x`) where SQLite, having no statistics,
-  picks a weak index. Next: `sqlindex --analyze` (planner statistics, now also on re-runs), re-profile,
-  then push + tag data-v4 once.
+  picks a weak index.
+- **ANALYZE (2026-11-22) fixed most of it.** Random-episode look-ahead timeouts, indexes only ->
+  + ANALYZE: movie_platform 7.3% -> 1.8%, talkingdata 7.9% -> 0.9%, bike_share_1 2.5% -> 0.5%,
+  donor 1.9% -> 1.3%, codebase_comments 2.0% -> 1.9%; mean look-ahead 0.06-0.15 s; 2-4x more
+  episodes per 120 s than with indexes alone (vs data-v3: 4-10x). **Outlier: language_corpus** (13.9%
+  timeouts, 0.33 s mean): its slow queries join every row of `words` (millions) through an
+  inferred edge that rarely matches, so the LIMIT never triggers; the -1 (unknown) flag covers
+  those states. Accepted; revisit only if BIRD RL is slow there. Step-5 numbers above unchanged
+  (ANALYZE changes speed only). Next: push + tag **data-v4**.
 - **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
   10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
   embedding similarity (P4) and a runtime exact-value probe.

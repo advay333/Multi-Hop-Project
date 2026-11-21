@@ -94,8 +94,29 @@ def push_large(repo: str, folder: str | Path) -> None:
 
     Uses many small commits and can be re-run after an interruption (molab sessions die);
     files already uploaded are skipped.
+
+    huggingface_hub 2.x dropped `upload_large_folder`; there, each file is its own commit and a
+    file whose SHA-256 already matches the repo copy is skipped (same resumability).
     """
-    api().upload_large_folder(repo_id=repo_id(repo), folder_path=str(folder), repo_type=repo_type(repo))
+    if hasattr(api(), "upload_large_folder"):
+        api().upload_large_folder(repo_id=repo_id(repo), folder_path=str(folder), repo_type=repo_type(repo))
+        return
+    import hashlib
+
+    folder = Path(folder)
+    files = sorted(p for p in folder.rglob("*") if p.is_file() and ".cache" not in p.relative_to(folder).parts)
+    rels = [p.relative_to(folder).as_posix() for p in files]
+    remote = remote_sha256(repo, rels)
+    for i, (p, rel) in enumerate(zip(files, rels), 1):
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 24), b""):
+                h.update(chunk)
+        if remote.get(rel) == h.hexdigest():
+            print(f"[{i}/{len(files)}] {rel}: already uploaded", flush=True)
+            continue
+        print(f"[{i}/{len(files)}] {rel}: uploading {p.stat().st_size / 2**30:.2f} GiB", flush=True)
+        push(repo, p, rel, f"upload {rel}")
 
 
 def remote_sha256(repo: str, paths: list[str], revision: str | None = None) -> dict[str, str | None]:

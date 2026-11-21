@@ -80,6 +80,8 @@ def _(GIT_REF, OUT, REPO_URL, WORKDIR, os, token_box):
     else:
         run(["git", "clone", "--depth", "1", "--branch", GIT_REF, REPO_URL, WORKDIR])
     run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{WORKDIR}[dev]"])
+    if os.path.join(WORKDIR, "src") not in sys.path:  # an editable install made after the kernel
+        sys.path.insert(0, os.path.join(WORKDIR, "src"))  # started is not on its path (push cell imports mhtable)
     run(["git", "-C", WORKDIR, "log", "-1", "--oneline"])  # must include mhtable/env/sqlindex.py
     run([sys.executable, "-m", "pytest", "-q", os.path.join(WORKDIR, "tests", "test_trackb.py"),
          os.path.join(WORKDIR, "tests", "test_env.py")])
@@ -236,7 +238,8 @@ def _(DATA, OUT, json, mo, os, push_go, push_ok, run, sys):
 
     _refs = _st.api().list_repo_refs(_st.repo_id("data"), repo_type="dataset")
     _main = next(b.target_commit for b in _refs.branches if b.name == "main")
-    _v3 = next(t.target_commit for t in _refs.tags if t.name == "data-v3")
+    # data-v3 is an annotated tag: its ref points at a tag object, so resolve it to its commit
+    _v3 = _st.api().list_repo_commits(_st.repo_id("data"), repo_type="dataset", revision="data-v3")[0].commit_id
     print(f"main {_main[:10]} | data-v3 {_v3[:10]} -> " + ("main is at data-v3: good" if _main == _v3 else
           "WARNING: main has commits after data-v3; data-v4 will include them. Tell Claude before tagging."))
     _man = json.load(open(os.path.join(DATA, "db_index_manifest.json")))

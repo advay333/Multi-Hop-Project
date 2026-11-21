@@ -494,9 +494,12 @@ accuracy, and writes `<out>/<run_id>/{config.yaml, metrics.jsonl, policy.pt, res
 the RL arms start from it. `evaluate_rollouts` reports path match, sufficiency, EM, overflow,
 steps and tokens, overall and by source and number of gold tables.
 
-**`selectors/`** — non-learned actors with the policy's interface:
-`truncate`, `random_rows`, `heuristic` (greedy cosine), `oracle` (gold trajectory — eval
-ceiling only), later `prompted_planner`, `sql_extract`.
+**`selectors/`** — non-learned actors with the policy's interface: `heuristic` (built in P6:
+question–table cosine from the embedding cache, relevant tables within δ of the best, best
+anchor, then JOIN relevant tables, STOP) and `oracle` (gold trajectory — eval ceiling only).
+The whole-table baselines B1 `truncate` and B2 `random_rows` have no action path: they use
+`TableEnv.materialise_tables(inst, order="rowid"|"random")` (all tables and columns, same token
+counter and budget) and are run by `evaluate.py`. Later: `prompted_planner`, `sql_extract`.
 
 **`metrics.py`** — Demands: trajectories + gold. Outputs: EM (normalised), set-F1, join-path
 exact accuracy, sub-table answer coverage, edge P/R, per-hop recall, reader tokens; sliced by

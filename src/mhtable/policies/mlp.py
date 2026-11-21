@@ -71,6 +71,7 @@ class MLPPolicy(Policy):
         yield from self.value_head.parameters()
 
     def forward(self, state_feat, action_feats, mask):
+        state_feat, action_feats = state_feat.float(), action_feats.float()  # stored features may be float16
         z = self.query(self.state_tower(state_feat))  # [B, d]
         phi = self.action_tower(action_feats)  # [B, A, d]
         logits = (z.unsqueeze(1) * phi).sum(-1) / math.sqrt(self.d) * self.log_temperature.exp()

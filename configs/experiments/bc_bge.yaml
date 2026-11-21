@@ -1,0 +1,15 @@
+# Behaviour cloning with real bge-m3 embeddings (PLAN.md P7 rerun; Track C).
+#   python -m mhtable.train --config configs/experiments/bc_bge.yaml --run-id bc-bge-strict-s0 env.tier=strict
+# Reads data-v3 and the frozen embedding cache from HuggingFace; demonstrations are stored in
+# float16 (algos/bc.py), so the 1024-d features fit in memory. Dev evaluation inside training uses
+# the mock reader (join-path accuracy is the BC gate metric); the real-reader numbers come from
+# `python -m mhtable.evaluate --selector policy --policy runs/<run>/policy.pt`.
+_base_: bc.yaml
+
+data:
+  revision: data-v3
+
+encoder:
+  name: st
+  model: BAAI/bge-m3
+  cache: hf:embeddings/bge-m3/spider_mmqa.npz

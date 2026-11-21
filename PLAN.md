@@ -267,7 +267,21 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - Firewall assertions (gold fields can never reach featurise or the reader prompt).
 - **Gate:** unit tests for telescoping shaping (sum = 0), GAE at γ = 1, masking, firewall.
 
-### P6 — Baselines + oracle ceiling (laptop with mock, then molab with the real reader)
+### P6 — Baselines + oracle ceiling (laptop with mock, then molab with the real reader) — CODE DONE 2026-11-21; real-reader run pending (`notebooks/track_c.py`)
+- **Built:** `selectors/heuristic.py` (question–table cosine from the embedding cache; relevant
+  tables = within δ = 0.1 of the best, ≤ 3; best anchor on them, else SEED; JOIN relevant tables
+  by cosine; STOP), `TableEnv.materialise_tables` (B1 truncate: all tables, all columns, rowid
+  order, cut at B; B2 random rows: equal budget share per table, seeded uniform sample),
+  `evaluate --selector heuristic|truncate|random_rows` (whole-table baselines have no
+  path_match / sufficiency); 111 tests pass.
+- **Laptop dry run (data-v2 dev, full split; no real reader):** heuristic with the lexical `hash`
+  encoder — join-path accuracy **8.4% strict / 7.2% relaxed** (BC with the same encoder: 31.5% /
+  25.3%), answer shown 35% / 33%. B1 / B2 serialisation: **answer shown 93% / 92–93% at only
+  ~720 / ~620 tokens, budget overflow 5% / 9%** — the Spider/MMQA dev databases mostly fit in
+  4,096 tokens whole (G-2 again). So the P6 question "does selection beat reading everything?"
+  hinges on whether the reader answers worse from whole databases (it must do the joins itself)
+  than from the selected sub-table; selection's other gains are fewer tokens and the hard cases
+  (BIRD, larger tables). The real-reader run settles it.
 - Selectors: B1 truncate, B2 random rows, heuristic (greedy cosine + top-k), oracle sub-table.
 - **Gate:** numbers on dev for each; the oracle ceiling tells us how much headroom the reader leaves.
 
@@ -305,6 +319,10 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   only sees shared words, so the policy memorises training schemas; bge-m3 embeddings (P4)
   should narrow the gap. If they do not, add regularisation (dropout, label smoothing, smaller
   d) and BIRD demonstrations. 3-table questions are the weak slice.
+- **2026-11-21:** demonstrations are stored in float16 (the policy casts to float32), which removes
+  the 1024-d memory blocker; `configs/experiments/bc_bge.yaml` trains on the bge-m3 cache
+  (`hf:embeddings/bge-m3/spider_mmqa.npz`, data-v3); `notebooks/track_c.py` runs it (strict +
+  relaxed) and evaluates the checkpoints with the real reader next to the P6 baselines.
 - **Open:** the gate needs the P6 heuristic selector to compare against; rerun BC with the real
   encoder once the P4 embedding cache exists. Memory note: demonstrations hold full feature
   arrays — fine at 64-d (≈ 0.2 GB), but with 1024-d embeddings ≈ 1–3 GB for Spider+MMQA(+BIRD):
@@ -423,9 +441,10 @@ grid ≈ 20–25 h, i.e. 2–3 sessions run one at a time.
 or one 4-bit replica per T4; T4 has no bf16 and no FlashAttention-2); embedding cache ~5–10 min
 (Spider+MMQA) / ~45–90 min (BIRD); P6 baselines ~15–40 min; one P9 run ≈ 3.5–7 h (reader 2–5 h +
 env/update on 4 slower cores), so ~4–8 runs per weekly quota. **Fairness rule:** runs compared in
-one table must use the same reader weights, precision and vLLM version on every platform (run
-the reader in fp16 on molab too, or the same 4-bit checkpoint everywhere), and the reader `id`
-must include the precision so cache shards never mix.
+one table must use the same reader weights, precision and vLLM version on every platform, and
+the reader `id` includes the precision so cache shards never mix. **Decision 2026-11-21: the
+reader runs in bf16** (molab, Prajna A100/A40/L40S); Kaggle's T4s cannot, so Kaggle does no
+reader runs that enter a comparison table (embeddings or other reader-free work only).
 
 **Run time to reach P9:** on molab ≈ 2 h (C) + 3–5 h (B), plus ~3–4 h of A on the laptop in
 parallel, i.e. about one molab day. Laptop-only cannot reach P9 (B needs molab; C would take

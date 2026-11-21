@@ -5,10 +5,15 @@ Evaluation entry point: one selector, one reader, both action tiers (DESIGN.md �
         [--policy runs/<run>/policy.pt] [--split dev] [--tiers strict relaxed] [--limit 200] \
         [--data-dir D] [--index-dir I] [--out runs] [--run-id NAME] [--reported] [key=value ...]
 
-Selectors: `oracle` (follows the gold trajectory: the ceiling for this reader, never a reported
-system) and `policy` (a trained checkpoint, `--policy`). The P6 baselines plug in here as more
-selectors. Every selector goes through the same rollout, materialiser, prompt, reader and budget
-(PLAN.md §6 rules 5–6). Gold is used for metrics only (`oracle_mode="metric_only"`; the reward
+Selectors (report E.5):
+    oracle       follows the gold trajectory: the ceiling for this reader (never reported)
+    policy       a trained checkpoint (`--policy`), e.g. BC (B7) or an RL arm
+    heuristic    greedy cosine + top-k tables in the action space (selectors/heuristic.py)
+    truncate     B1: every table, all columns, rows in order, cut at the budget (no selection)
+    random_rows  B2: every table gets an equal budget share of uniformly sampled rows
+Action-space selectors go through the shared rollout and `materialise`; truncate / random_rows
+serialise whole tables with `TableEnv.materialise_tables` (same token counter and budget). All
+use the same prompt and reader (PLAN.md §6 rules 5–6). Gold is used for metrics only (`oracle_mode="metric_only"`; the reward
 mode is refused here by construction).
 
 Writes `<out>/<run_id>/`:
@@ -35,14 +40,16 @@ import mhtable.policies  # noqa: F401  (registers policies)
 import mhtable.readers  # noqa: F401  (registers readers)
 from mhtable.config import load_config
 from mhtable.dataset import load_split
-from mhtable.metrics import summarise
+from mhtable.metrics import answer_in_subtable, em_norm, set_f1, summarise
 from mhtable.readers.base import CachedReader
 from mhtable.registry import build
 from mhtable.rollout import PolicyActor, collect
+from mhtable.selectors.heuristic import HeuristicSelector
 from mhtable.selectors.oracle import OracleSelector
 from mhtable.train import build_env, build_featuriser, git_dirty, git_sha, load_checkpoint, seed_everything
 
-SELECTORS = ("oracle", "policy")
+SELECTORS = ("oracle", "policy", "heuristic", "truncate", "random_rows")
+TABLE_BASELINES = {"truncate": "rowid", "random_rows": "random"}
 
 
 def question_row(inst, gold, tr) -> dict:
@@ -59,14 +66,35 @@ def question_row(inst, gold, tr) -> dict:
                                                           "anchor_hit", "anchor_pred", "anchor_gold")}}
 
 
+def table_rows(env, reader: CachedReader, part, order: str, seed: int) -> list[dict]:
+    """B1 / B2: serialise whole tables, ask the reader once per question (batched), score."""
+    from mhtable.featurise import question_text
+
+    mats = [env.materialise_tables(inst, order=order, seed=seed) for inst, _ in part]
+    answers, called = reader.read_batch([question_text(inst) for inst, _ in part], [m.text for m in mats])
+    rows = []
+    for (inst, gold), m, ans, c in zip(part, mats, answers, called):
+        rows.append({"instance_id": inst.instance_id, "source": inst.source, "category": inst.category,
+                     "tables": f"{inst.n_gold_tables}_tables", "monotone": gold.monotone, "question": inst.question,
+                     "answer": ans, "gold_answer": gold.gold_answer, "em": em_norm(ans, gold.gold_answer),
+                     "set_f1": set_f1(ans, gold.gold_answer), "path_match": None, "sufficient": None,
+                     "answer_in_subtable": answer_in_subtable(m.text, gold.gold_answer), "tokens": m.tokens,
+                     "overflow": float(m.overflow), "rows_shown": m.rows_shown, "steps": 0, "actions": [],
+                     "visited": [], "reader_called": c, "columns": m.columns, "subtable": m.text, "hops": []})
+    return rows
+
+
 def evaluate_tier(cfg, args, tier: str, reader: CachedReader, run_dir: Path, log) -> dict:
     env = build_env(cfg, args.data_dir, args.index_dir, tier=tier)
     try:
         items = load_split(env.data, args.split, tier, tuple(cfg.data.sources), args.limit, cfg.seed)
         golds = {i.instance_id: g for i, g in items}
+        actor = None
         if args.selector == "oracle":
             actor = OracleSelector(golds)
-        else:
+        elif args.selector == "heuristic":
+            actor = HeuristicSelector(env, build_featuriser(cfg, env).cache)
+        elif args.selector == "policy":
             policy, ck = load_checkpoint(args.policy)
             feat = build_featuriser(cfg, env)
             if ck["spec"] != feat.spec:
@@ -80,9 +108,12 @@ def evaluate_tier(cfg, args, tier: str, reader: CachedReader, run_dir: Path, log
         path.unlink(missing_ok=True)
         for k in range(0, len(items), args.chunk):
             part = items[k:k + args.chunk]
-            trajs = collect(env, actor, reader, [i for i, _ in part], mode="argmax", oracle_mode="metric_only",
-                            golds={i.instance_id: g for i, g in part}, detail=True)
-            new = [question_row(inst, gold, tr) for (inst, gold), tr in zip(part, trajs)]
+            if args.selector in TABLE_BASELINES:
+                new = table_rows(env, reader, part, TABLE_BASELINES[args.selector], cfg.seed)
+            else:
+                trajs = collect(env, actor, reader, [i for i, _ in part], mode="argmax", oracle_mode="metric_only",
+                                golds={i.instance_id: g for i, g in part}, detail=True)
+                new = [question_row(inst, gold, tr) for (inst, gold), tr in zip(part, trajs)]
             rows += new
             with open(path, "a", encoding="utf-8") as f:
                 for r in new:

@@ -54,7 +54,8 @@ class Decision:
 def pad_actions(feats: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
     """[A_i, d] arrays -> padded [B, A_max, d] tensor and a [B, A_max] mask (True = real candidate)."""
     a_max, d = max(f.shape[0] for f in feats), feats[0].shape[1]
-    out = torch.zeros(len(feats), a_max, d)
+    dtype = torch.float16 if feats[0].dtype == np.float16 else torch.float32  # BC stores float16
+    out = torch.zeros(len(feats), a_max, d, dtype=dtype)
     mask = torch.zeros(len(feats), a_max, dtype=torch.bool)
     for i, f in enumerate(feats):
         out[i, : f.shape[0]] = torch.from_numpy(f)

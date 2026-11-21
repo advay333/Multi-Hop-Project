@@ -26,7 +26,7 @@ from mhtable.sufficiency import entity_overlap, gold_hops  # noqa: E402
 from mhtable.types import Action  # noqa: E402
 
 from test_env import GOLD, _env, _inst, data_dir  # noqa: E402,F401  (data_dir is a fixture)
-from test_learning import Scripted, _write_repo, gold  # noqa: E402,F401  (gold is a fixture)
+from test_learning import Scripted, _write_repo, gold, setup  # noqa: E402,F401  (fixtures)
 
 ROOT = Path(__file__).parents[1]
 
@@ -256,3 +256,80 @@ def test_st_encoder_with_a_tiny_model():
     v = enc.encode(["head born state", "department creation"])
     assert v.shape == (2, enc.dim) and np.allclose(np.linalg.norm(v, axis=1), 1.0, atol=1e-4)
     assert enc.id == "stsb-bert-tiny-safetensors"
+
+
+# ---------------------------------------------------------------- P6 baselines
+class EchoReader:
+    """Answers with the first data cell of the first table (registered for the evaluate test)."""
+
+    id, needs_gold = "echo", False
+
+    def read_batch(self, questions, subtables, meta=None):
+        out = []
+        for s in subtables:
+            rows = [ln for ln in s.splitlines() if ln.startswith("|") and not ln.startswith("|---")]
+            out.append(rows[1].strip("|").split("|")[0].strip() if len(rows) > 1 else "")
+        return out
+
+    def cache_extra(self, meta):
+        return ""
+
+
+def test_table_baselines_serialise_whole_tables(data_dir):  # noqa: F811
+    env = _env(data_dir)
+    inst = _inst()
+    full = env.materialise_tables(inst, order="rowid")
+    assert not full.overflow and full.rows_shown == 7 and "Table: department" in full.text and "Tiger Woods" in full.text
+    cut = env.materialise_tables(inst, order="rowid", budget=40)
+    assert cut.overflow and cut.tokens <= 40 and cut.rows_shown < 7
+    rnd = env.materialise_tables(inst, order="random", budget=120, seed=1)
+    assert rnd.tokens <= 120 and rnd.text.count("Table:") >= 2  # every table gets a share
+    assert env.materialise_tables(inst, order="random", budget=120, seed=1).text == rnd.text  # seeded
+    env.close()
+
+
+def test_heuristic_selector_follows_question_tables(data_dir, gold):  # noqa: F811
+    from mhtable.encoders import HashEncoder
+    from mhtable.selectors import HeuristicSelector
+
+    env = _env(data_dir)
+    golds = {gold.instance_id: gold}
+    sel = HeuristicSelector(env, EmbCache.live(HashEncoder(64)), delta=1.0)
+    (tr,) = collect(env, sel, MockReader(), [_inst()], mode="argmax", oracle_mode="metric_only", golds=golds)
+    assert tr.info["actions"][0] == "ANCHOR" and tr.info["actions"][-1] == "STOP"
+    assert {"head", "management", "department"} <= set(tr.info["visited"])  # delta=1 keeps every table
+    env.close()
+
+
+def test_evaluate_baseline_selectors(tmp_path, data_dir, gold, monkeypatch):  # noqa: F811
+    from mhtable import evaluate
+    from mhtable.registry import _REGISTRY
+
+    monkeypatch.setitem(_REGISTRY["reader"], "echo", EchoReader)
+    _write_repo(data_dir, gold)
+    base = ["--config", str(ROOT / "configs" / "experiments" / "eval.yaml"), "--data-dir", str(data_dir),
+            "--out", str(tmp_path / "runs")]
+    over = ["data.sources=[spider]", "data.revision=null", "env.tokenizer=null", "encoder={name: hash, dim: 32}"]
+    for sel in ("truncate", "random_rows"):
+        assert evaluate.main(base + ["--selector", sel, "--run-id", sel, "--reported"] + over + ["reader={name: echo}"]) == 0
+        res = json.loads((tmp_path / "runs" / sel / "result.json").read_text())
+        assert res["reportable"] is True and res["tiers"]["strict"]["n"] == 1
+        assert "path_match" not in res["tiers"]["strict"]  # no action path for whole-table baselines
+    assert evaluate.main(base + ["--selector", "heuristic", "--run-id", "h"] + over + ["reader={name: mock}"]) == 0
+    res = json.loads((tmp_path / "runs" / "h" / "result.json").read_text())
+    assert res["tiers"]["relaxed"]["n"] == 1 and "path_match" in res["tiers"]["relaxed"]
+
+
+def test_bc_demonstrations_are_float16(setup, data_dir, gold):  # noqa: F811
+    from mhtable.algos.bc import BC, demonstrations
+
+    env, feat, policy, golds = setup
+    demos, stats = demonstrations(env, feat, [(_inst(), gold)])
+    assert stats["reachable"] == 1 and demos[0].steps[0].action_feats.dtype == np.float16
+    bc = BC(policy, lr=0.01)
+    batch = bc.compute_advantages(demos)
+    assert batch.actions.dtype == torch.float16
+    first = bc.update(batch)["loss"]
+    for _ in range(30):
+        last = bc.update(batch)["loss"]
+    assert last < first

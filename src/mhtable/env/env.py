@@ -214,6 +214,62 @@ class TableEnv:
                     out.append(k)
         return out
 
+    def materialise_tables(self, inst: Instance, order: str = "rowid", budget: int | None = None,
+                           seed: int = 0) -> Materialised:
+        """Whole tables, no selection — the P6 baselines (report E.5):
+            order="rowid"   B1 truncate: every episode table with all its columns, in schema
+                            order, rows in rowid order, the whole text cut at the budget
+            order="random"  B2 random rows: each table gets an equal share of the budget, filled
+                            with uniformly sampled rows (seeded by `seed` and the question id)
+        Same token counter as `materialise`; at most `max_fetch_rows` rows are read per table."""
+        import random
+
+        budget = budget or self.cfg.budget_tokens
+        if order not in ("rowid", "random"):
+            raise ValueError(f"order must be rowid or random, got {order!r}")
+        schema = self.data.schema(inst.db_ref)
+        con = self._conn(inst.db_ref)
+        tables = [t.lower() for t in (inst.tables or sorted(schema.columns)) if t.lower() in schema.columns]
+        share = budget / max(len(tables), 1)
+        text, used, shown, total, cols_out, overflow = "", 0.0, 0, 0, [], False
+        for t in tables:
+            keys = [f"{t}.{c.lower()}" for c in schema.columns[t]]
+            cols_out += keys
+            sel = ", ".join(column_sql(schema, k) for k in keys)
+            rows = run(con, f"SELECT {sel} FROM {table_sql(schema, t)}", 30.0, self.cfg.max_fetch_rows + 1)
+            total += len(rows)
+            if order == "random":
+                rows = list(rows)
+                random.Random(f"{seed}:{inst.instance_id}:{t}").shuffle(rows)
+            head = (f"Table: {schema.table_names.get(t, t)}\n| " + " | ".join(schema.columns[t]) + " |\n|"
+                    + "---|" * len(keys))
+            block_cost = self.counter.count(("\n\n" if text else "") + head)
+            limit = budget if order == "rowid" else used + share
+            if used + block_cost > limit:
+                overflow = True
+                if order == "rowid":
+                    break
+                continue
+            text += ("\n\n" if text else "") + head
+            used += block_cost
+            lines = ["| " + " | ".join("" if v is None else str(v).replace("|", "/").replace("\n", " ") for v in r) + " |"
+                     for r in rows]
+            for line, cost in zip(lines, self.counter.count_many(["\n" + x for x in lines])):
+                if used + cost > limit:
+                    overflow = True
+                    break
+                text += "\n" + line
+                used += cost
+                shown += 1
+            if overflow and order == "rowid":
+                break
+        if self.counter.exact:
+            used = self.counter.count(text)
+            while used > budget and "\n" in text:
+                text = text.rsplit("\n", 1)[0]
+                used = self.counter.count(text)
+        return Materialised(text, int(used), total, shown, cols_out, overflow)
+
     def materialise(self, s: State, budget: int | None = None) -> Materialised:
         budget = budget or self.cfg.budget_tokens
         ctx = self._context(s)

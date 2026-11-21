@@ -22,7 +22,8 @@ from mhtable.registry import register
 from mhtable.types import Step, Trajectory
 
 
-def demonstrations(env, featuriser, items, progress: bool = False) -> tuple[list[Trajectory], dict]:
+def demonstrations(env, featuriser, items, progress: bool = False,
+                   feature_dtype=np.float16) -> tuple[list[Trajectory], dict]:
     """Follow each gold trajectory through the environment, recording features and the index of
     the gold action among the candidates at every step."""
     demos, stats = [], {"questions": len(items), "reachable": 0, "unreachable": 0, "errors": 0, "steps": 0}
@@ -41,7 +42,10 @@ def demonstrations(env, featuriser, items, progress: bool = False) -> tuple[list
                     steps = None
                     break
                 sf, af = featuriser(s, cands)
-                steps.append(Step(sf, af, np.ones(len(cands), dtype=bool), idx, 0.0, 0.0))
+                # float16 halves memory: with 1024-d bge-m3 slots the demonstration set of
+                # Spider+MMQA(+BIRD) is several GB in float32. The policy casts back to float32.
+                steps.append(Step(sf.astype(feature_dtype), af.astype(feature_dtype),
+                                  np.ones(len(cands), dtype=bool), idx, 0.0, 0.0))
                 s, done = env.step(s, cands[idx])
                 if done:
                     break

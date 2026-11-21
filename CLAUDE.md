@@ -35,9 +35,9 @@ short-horizon, small-action regime?
   indexes on join/anchor columns → `data-v4`, a row-count cap, or excluding the largest DBs).
   Train on Spider+MMQA first. The data-v3 per-tier oracle `fail_reasons` were not seen (molab
   session lost); `stats/bird.json` on HF has them if the build pushed `stats/`.
-- **Compute:** molab is the main compute **for now** — Prajna login is blocked on a two-factor
-  reset (the QR code was never shown; needs a reset from hpc@iitb.ac.in). Prajna becomes main once
-  access works (section below).
+- **Compute:** Prajna access works since 2026-11-21 (account `cs769_02`; partitions and limits in
+  the Prajna section below) and becomes the main compute once the `slurm/` scripts exist and
+  internet access on compute nodes is confirmed; molab remains the fallback.
 - **P5 learning core — done 2026-11-17** (built before P4 because it needs no molab run; 93 tests
   pass): `featurise.py`, `policies/mlp.py`, `rewards.py`, `rollout.py`, `algos/base.py`,
   `firewall.py`, `sufficiency.py`, plus the reader/encoder interface slices (`readers/base.py`,
@@ -63,6 +63,13 @@ short-horizon, small-action regime?
   **Projection fixed 2026-11-18:** `materialise` now shows every column of the visited tables
   that fits the budget (`env.project_all_columns`); answer_in_subtable on the gold path 69% → 91%
   strict, 48% → 88% relaxed (PLAN P4).
+- **Track C laptop work — done 2026-11-21** (111 tests): P6 baselines (`selectors/heuristic.py`,
+  `TableEnv.materialise_tables` for B1 truncate / B2 random rows, `evaluate --selector
+  heuristic|truncate|random_rows`), BC demonstrations in float16 (1024-d fits),
+  `configs/experiments/bc_bge.yaml`, reader locked to Qwen2.5-7B + prompt p1 + bf16 in
+  `eval.yaml`. **GPU run pending:** `notebooks/track_c.py` (BC with bge-m3, full-dev evaluation
+  of oracle / B1 / B2 / heuristic / BC). Dry run: whole tables show the answer 93% of the time at
+  ~700 tokens (dev DBs are small), so B1 may be a strong baseline (PLAN P6).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the
@@ -89,7 +96,7 @@ short-horizon, small-action regime?
   `source_data.py`, `build_data.py` (`--family spider_mmqa|bird`), `build_index.py`,
   `rebuild_v3.py` (whole data-v3 rebuild + verification + tag), `p4_reader.py` (vLLM reader
   smoke test, bge-m3 embedding cache, P4 gate), `reader_ablation.py` (7B/14B x prompt p1/p2 on
-  gold sub-tables, with throughput).
+  gold sub-tables, with throughput), `track_c.py` (BC with bge-m3 + baselines + BC gate).
 - Laptop: Windows, RTX 4060 8 GB, slow network (~370 KB/s) — development and unit tests only;
   never download BIRD databases (32 GB) locally.
 
@@ -99,14 +106,23 @@ Source: `Updated User Manual for Prajna (AiML) HPC.pdf` in the project root. Re-
 doubt; this section summarises it and our rules on top of it.
 
 **What it is.** IIT Bombay's Prajna (AI-ML) cluster: Rocky Linux 9, x86_64, SLURM 23.11,
-Lustre parallel filesystem (2 PB), InfiniBand. GPU partitions (manual p. 10):
+Lustre parallel filesystem (2 PB), InfiniBand. GPU partitions:
 
-| Nodes | GPUs per node | Partition name in manual |
-|---|---|---|
-| 9 DGX A100 | 8× A100 | not stated |
-| 20 Exatron | 4× A40 (48 GB) — node example: 64 cores, 512 GB RAM | `a40` |
-| 7 Exatron | 8× L40S (48 GB) | `l40` (shown as default) |
-| 10 Tyron | 2× L4 (24 GB) | not stated |
+**Measured on first login (2026-11-21, `sinfo` / `scontrol` / `sacctmgr`):**
+
+| Partition | Nodes | GPUs/node | CPUs/node, RAM | Max wall | QoS (same name) — max jobs per user |
+|---|---|---|---|---|---|
+| `dgx` | 9 (cn11–19) | 8× A100 | 256, ~2 TB | 6 days | `dgx` — 4 |
+| `dgx-mpi` | 3 (cn11–13, shared with dgx) | 8× A100 | 256, ~2 TB | 6 days | `dgx-mpi` — 1 |
+| `a40` | 19 (cn21–39) | 4× A40 48 GB | 64, ~500 GB | 4 days | `a40` — 3 |
+| `l40` (default) | 6 (cn40–45) | 8× L40S 48 GB | 32+, ~450 GB | 2 days | `l40` — 4 |
+| `interactive` | 3 (cn11-dgx, cn22-a40, cn41-l40) | 8 or 4 | 64+, ~500 GB | 4 h | `interactive` — 2 |
+| `debug` | 1 (cn39-a40) | 4× A40 | 64, ~500 GB | 30 min | `debug` |
+
+QoS `l4`, `gh200` and `normal` are also granted, but no `l4`/`gh200` partition is visible in
+`sinfo` (the manual's L4 nodes are not schedulable for us). Each partition only allows its own
+QoS (`AllowQos=<name>`), so every job sets **`--partition=X --qos=X`** with the same name.
+Accounts: `cs769_02` (ours; also `cs769`), **MaxJobs 12** in total across partitions.
 
 **Access** (course instructions for CS769, confirmed separately from the manual).
 `ssh <LDAP-ID>@prajna.iitb.ac.in` from PowerShell/terminal (or PuTTY/MobaXterm, or VS Code
@@ -146,16 +162,30 @@ or 2FA codes in the repo.
    with `pip install -e ".[dev]"`.
 8. Back up results: anything only on `/scratch` is at risk after 3 months.
 
-**Missing information — confirm on first login and record here** (not in the manual):
-- Exact partition and QoS names for the A100 and L4 nodes, our account's allowed partitions,
-  walltime and job/GPU limits — manual points to https://hpcverse.iitb.ac.in/queue-policy/prajna
-  and `sinfo` / `scontrol show partition <name>`.
-- Whether **compute nodes have internet access** (needed for HF downloads and pip). If not:
-  fetch data/models on the login node into `/scratch`, then run jobs with `HF_HUB_OFFLINE=1`.
-- `/home` and `/scratch` quotas for our group (data repo is ~33 GB; model weights ~15 GB).
-- Available Python/CUDA versions via Spack, and whether vLLM installs cleanly (driver version).
-- Our SLURM account name (`--account`) if more than one is assigned.
-- Whether interactive GPU sessions (`salloc`/`srun --pty`) are allowed for debugging.
+**Confirmed 2026-11-21:**
+- Partitions / QoS / limits: table above. Interactive GPU sessions **are** available
+  (`srun -p interactive --qos=interactive --gres=gpu:1 -t 01:00:00 --pty bash`, ≤ 4 h, ≤ 2 jobs).
+  **`srun` works only on `interactive`** ("Interactive jobs are only allowed on partition
+  'interactive'"); every other partition, `debug` included, takes `sbatch` scripts only.
+- QoS limits (`sacctmgr show qos`, 2026-11-21) — per user: submitted / running; whole QoS:
+  submitted / running. `a40`: 6 / 3, QoS 100 / 80. `l40`: 5 / 4, QoS 70 / 56. `interactive`:
+  2 / 2, QoS **5 / 3 for the whole cluster** (hard to get). `debug` shows no limits, yet
+  `sbatch` to it failed with `AssocGrpSubmitJobsLimit` — treat `debug` as unusable for us.
+  So job arrays must use `%3` (a40) or `%4` (l40) and stay within 6 / 5 submitted tasks.
+- `/home`: `lfs quota` shows **no user quota** (limit 0 = unlimited; 224 KB used).
+- SLURM account: `--account=cs769_02`.
+- Filesystems: `/home` is the 1.3 PB Lustre (73% full; `quota -s` reports nothing, so no user
+  quota was shown — check `lfs quota -h -u $USER /home`). **`/scratch` is not Lustre** here: a
+  250 GB filesystem (`slurm:/scratch`, 212 GB free) — `lfs quota` fails on it. Our data repo is
+  ~33 GB (BIRD DBs 32 GB) + model weights ~15–30 GB + BIRD embeddings 5.4 GB: fits, but check
+  whether `/scratch` is shared by all users or node-local before relying on it; the safer
+  default for caches is a folder under `/home`.
+
+**Still to confirm** (needs a short job, not the login node):
+- Whether **compute nodes have internet access** (HF downloads, pip), the GPU driver / CUDA
+  (vLLM needs a recent driver) and whether `/scratch` is shared — one interactive job:
+  `srun -p interactive --qos=interactive --gres=gpu:1 -t 00:10:00 bash -c 'hostname; curl -sI https://huggingface.co | head -1; nvidia-smi; df -h /scratch'`.
+  If no internet: download data and models on the login node, then run jobs with `HF_HUB_OFFLINE=1`.
 
 ## Rules for agents
 

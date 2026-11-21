@@ -1,7 +1,7 @@
 # Evaluation with the real reader (PLAN.md P4 gate; report E.1: Qwen2.5-7B-Instruct via vLLM, greedy).
 #   python -m mhtable.evaluate --config configs/experiments/eval.yaml --selector oracle --limit 200
 # On a machine without vLLM: reader.name=hf (same prompt, different backend -> its own cache id).
-# Kaggle 2x T4: reader.tensor_parallel_size=2 (keep dtype float16 everywhere, PLAN.md §4b).
+# Kaggle 2x T4 has no bf16: reader runs there are not comparable with these (PLAN.md §4b).
 _base_: ../base.yaml
 
 data:
@@ -10,10 +10,15 @@ data:
 env:
   tokenizer: reader         # count the 4,096-token budget with the reader's own tokenizer
 
-reader:
+encoder:                    # used by the heuristic and policy selectors only
+  name: st
+  model: BAAI/bge-m3
+  cache: hf:embeddings/bge-m3/spider_mmqa.npz
+
+reader:                     # locked 2026-11-21 after the reader ablation (PLAN P4)
   name: vllm
   model: Qwen/Qwen2.5-7B-Instruct
-  dtype: float16
+  dtype: bfloat16
   prompt: p1                # readers/prompt.py: p1 (gate) | p2 (explicit column/row rules)
   max_new_tokens: 512
   max_model_len: 6144

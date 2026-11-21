@@ -193,7 +193,31 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   columns and *all* matching rows; a column-tolerant EM variant as a secondary metric; a larger
   reader (Qwen2.5-14B/32B fit in 96 GB, not on Kaggle T4s). Decide before P6/P9, since every
   arm is capped by this ceiling; P6's truncate baseline tells how much selection still adds.
-- **Reader ablation (code 2026-11-19, run pending):** prompt versions (`reader.prompt`: p1 = gate,
+- **Reader ablation results (molab 2026-11-19, `mhtable-runs/runs/reader-{7b,14b}-{p1,p2}-dev200`;
+  oracle sub-tables, same 200 dev questions per tier, bf16).** The raw p2 numbers looked worse
+  (7B strict 52% → 41%) — a **scoring artifact**: p2 makes the model end lines with a stray
+  `|` ("Maurizio Felugo |"), which `parse_answer` read as an extra empty cell. Fixed 2026-11-20
+  (blank cells at the edges of a line are separators; a deliberate empty cell is `""`). Re-scored
+  from the saved answers (EM; paired bootstrap, 10,000 resamples, vs 7b-p1):
+
+  | Arm | strict EM | relaxed EM | EM when answer shown (s / r) | vs 7b-p1 (strict / relaxed) | calls/h | load (warm) |
+  |---|---|---|---|---|---|---|
+  | 7b-p1 | **56.0%** | **50.5%** | 59.4% / 53.0% | — | ~50k | 50 s |
+  | 7b-p2 | 54.0% | 49.0% | 57.7% / 51.8% | −2.0 [−7.5, +3.5] / −1.5 [−7, +4] | ~51k | 50 s |
+  | 14b-p1 | 53.0% | 54.0% | 57.7% / 59.5% | −3.0 [−9.5, +3.5] / +3.5 [−3.5, +10] | ~41k | 136 s |
+  | 14b-p2 | 50.0% | 50.5% | 53.7% / 54.2% | −6.0 [−13, +0.5] / 0.0 [−6.5, +6.5] | ~42k | 46 s |
+
+  **No arm differs significantly from 7b-p1** (all 95% intervals contain 0). Neither the p2 rules
+  nor the 14B reader raise the ceiling; the 14B is ~15–20% slower and loses Numerical questions
+  (strict 26% vs 42%). **Decision proposal: keep Qwen2.5-7B + p1** (the report's reader,
+  fastest, fits Kaggle T4s). The ~55% ceiling is a property of the task + gold labels (wrong
+  argmax/aggregates, list completeness, MMQA gold answers with extra columns), so RL results are
+  read as headroom closed relative to it (PLAN §5). The parser fix also lifts the P4 gate numbers
+  (same 7b-p1 answers): strict 52.0% → 56.0%, relaxed 48.5% → 50.5%.
+  **Throughput for planning** (batches ≤ 128, mean prompt ~580 tokens, answer ~20–26 tokens):
+  7B ≈ 50k calls/h (≈ 8–10k prompt tokens/s), 14B ≈ 42k calls/h; model load 50 s warm (first
+  download 2–4 min). A 300-iteration RL run (~24k calls) needs ≈ 30 min of reader time with 7B.
+- **Reader ablation (code 2026-11-19):** prompt versions (`reader.prompt`: p1 = gate,
   p2 = exact requested attributes, every matching row, compare all rows; in the reader id and
   cache key), `evaluate --fresh` (no cached answers, so timing is real), reader load time and
   token throughput in `result.json`. Notebook `notebooks/reader_ablation.py` runs 7B/14B × p1/p2

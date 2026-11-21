@@ -60,6 +60,11 @@ def test_reader_id_and_answer_clean_up():
     assert clean_answer("Answer: 1903") == "1903"
     assert clean_answer("```\n- State | 1789\n- Treasury | 1789\n```") == "State | 1789\nTreasury | 1789"
     assert clean_answer("\n\n  42  \n") == "42"
+    from mhtable.metrics import em_norm, parse_answer
+
+    assert em_norm("Maurizio Felugo |", [["maurizio felugo"]]) == 1.0  # trailing separator is not a value
+    assert em_norm("| a | b |\n| c | d |", [["a", "b"], ["c", "d"]]) == 1.0
+    assert parse_answer('x | "" | y') == [("x", "", "y")] and parse_answer("|") == []
 
 
 def test_chat_prompt_cuts_rows_to_fit():

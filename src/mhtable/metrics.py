@@ -43,10 +43,18 @@ def format_answer(rows: list[list]) -> str:
 
 
 def parse_answer(text: str | None) -> list[tuple[str, ...]]:
+    """Answer text -> rows of normalised cells. Blank cells at the start or end of a line are
+    separators, not values ("Maurizio Felugo |", "| a | b |"); an intentionally empty cell is
+    written `""` (format_answer) and is kept."""
     rows = []
     for line in (text or "").splitlines():
-        if line.strip():
-            rows.append(tuple(_cell(c) for c in line.split("|")))
+        cells = line.split("|")
+        while cells and not cells[0].strip():
+            cells.pop(0)
+        while cells and not cells[-1].strip():
+            cells.pop()
+        if cells:
+            rows.append(tuple(_cell(c) for c in cells))
     return rows
 
 

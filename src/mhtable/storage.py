@@ -117,9 +117,20 @@ def db_path(db_ref: str, revision: str | None = None) -> Path:
     return fetch("data", f"db/{db_ref}.sqlite", revision=revision)
 
 
+def download(repo: str, local_dir: str | Path, patterns: list[str], revision: str | None = None) -> Path:
+    """Download matching files as real files (not cache links) under `local_dir`, at their repo
+    paths — for jobs that modify files in place (e.g. `env.sqlindex`). Resumable."""
+    root = snapshot_download(repo_id(repo), repo_type=repo_type(repo), revision=revision,
+                             allow_patterns=patterns, local_dir=str(local_dir))
+    return Path(root)
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python -m mhtable.storage push <repo> <local file or folder> <path in repo> [-m MESSAGE]`
-    — used by the notebooks to upload results (e.g. an evaluation run to mhtable-runs)."""
+    — used by the notebooks to upload results (e.g. an evaluation run to mhtable-runs).
+    `python -m mhtable.storage download <repo> <local dir> --include PATTERN... [--revision REV]`
+    — real-file copy of part of a repo. `push-large <repo> <folder>` — resumable folder upload
+    mirroring the folder at the repo root. `tag <repo> <name> [-m MESSAGE]`."""
     import argparse
 
     p = argparse.ArgumentParser(description=main.__doc__)
@@ -129,7 +140,30 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("local")
     up.add_argument("path_in_repo")
     up.add_argument("-m", "--message", default=None)
+    dl = sub.add_parser("download")
+    dl.add_argument("repo", choices=sorted(REPOS))
+    dl.add_argument("local_dir")
+    dl.add_argument("--include", nargs="+", required=True)
+    dl.add_argument("--revision", default=None)
+    pl = sub.add_parser("push-large")
+    pl.add_argument("repo", choices=sorted(REPOS))
+    pl.add_argument("folder")
+    tg = sub.add_parser("tag")
+    tg.add_argument("repo", choices=sorted(REPOS))
+    tg.add_argument("name")
+    tg.add_argument("-m", "--message", default="")
     args = p.parse_args(argv)
+    if args.cmd == "download":
+        print(f"downloaded to {download(args.repo, args.local_dir, args.include, args.revision)}")
+        return 0
+    if args.cmd == "push-large":
+        push_large(args.repo, args.folder)
+        print(f"pushed {args.folder} -> {repo_id(args.repo)} (repo root)")
+        return 0
+    if args.cmd == "tag":
+        tag(args.repo, args.name, args.message)
+        print(f"tagged {repo_id(args.repo)} as {args.name}")
+        return 0
     sha = push(args.repo, args.local, args.path_in_repo, args.message or f"upload {args.path_in_repo}")
     print(f"pushed {args.local} -> {repo_id(args.repo)}/{args.path_in_repo} ({sha[:10]})")
     return 0

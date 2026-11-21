@@ -17,7 +17,11 @@ This module never imports the oracle and never reads `gold/` (firewall, DESIGN.m
 
 from __future__ import annotations
 
+import heapq
 import json
+import sqlite3
+import time
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -42,6 +46,8 @@ class EnvConfig:
     project_top_columns: int = 4  # minimum extra question-relevant columns shown besides path columns
     project_all_columns: bool = True  # show every other column of visited tables while all rows fit B
     max_fetch_rows: int = 5000
+    fetch_timeout_s: float = 30.0  # materialise's row fetch; a timeout gives an empty sub-table
+    lookahead_memo: int = 500_000  # memoised look-ahead counts per env (cleared when full); 0 = off
 
 
 class EnvData:
@@ -87,6 +93,7 @@ class Materialised:
     rows_shown: int
     columns: list[str]
     overflow: bool  # True if rows were cut to fit the budget
+    timed_out: bool = False  # the row fetch hit fetch_timeout_s (sub-table left empty)
 
 
 class TableEnv:
@@ -97,6 +104,9 @@ class TableEnv:
         self.counter = make_counter(self.cfg.tokenizer, self.cfg.chars_per_token)
         self._ctx: dict[str, EpisodeContext] = {}
         self._con: dict[str, object] = {}
+        self._count_memo: dict[tuple[str, str], int] = {}
+        self.stats: Counter = Counter()  # look-ahead / materialise timings (analysis.speed reads them)
+        self.slow_queries: list[tuple[float, str, str]] = []  # (seconds, db_ref, sql), the 10 slowest look-aheads
 
     # ------------------------------------------------------------------ episode setup
     def reset(self, inst: Instance, tables: list[str] | None = None) -> State:
@@ -141,10 +151,29 @@ class TableEnv:
             return 0
         sql = (f"SELECT COUNT(*) FROM (SELECT 1 {from_where(schema, s.visited, s.joins, s.anchors)} "
                f"LIMIT {self.cfg.lookahead_cap})")
+        key = (s.instance.db_ref, sql)
+        if key in self._count_memo:  # the count depends only on the relation, not the question
+            self.stats["lookahead_memo_hits"] += 1
+            return self._count_memo[key]
+        t0 = time.perf_counter()
         try:
-            return run(self._conn(s.instance.db_ref), sql, self.cfg.lookahead_timeout_s)[0][0]
+            n = run(self._conn(s.instance.db_ref), sql, self.cfg.lookahead_timeout_s)[0][0]
         except QueryTimeout:
-            return -1
+            n = -1
+            self.stats["lookahead_timeouts"] += 1
+        dt = time.perf_counter() - t0
+        self.stats["lookahead_queries"] += 1
+        self.stats["lookahead_seconds"] += dt
+        item = (dt, s.instance.db_ref, sql)
+        if len(self.slow_queries) < 10:
+            heapq.heappush(self.slow_queries, item)
+        elif dt > self.slow_queries[0][0]:
+            heapq.heapreplace(self.slow_queries, item)
+        if self.cfg.lookahead_memo:
+            if len(self._count_memo) >= self.cfg.lookahead_memo:
+                self._count_memo.clear()
+            self._count_memo[key] = n
+        return n
 
     def _cols_tokens(self, cols: list[str], ctx: EpisodeContext) -> float:
         chars = sum(ctx.index.columns[c].avg_chars + 3 if c in ctx.index.columns else 8 for c in cols)
@@ -162,7 +191,10 @@ class TableEnv:
                 out.append(Action("STOP", lookahead_rows=s.n_rows, lookahead_tokens=s.est_tokens))
                 continue
             nxt = self.apply(s, a)
+            t0 = time.perf_counter()
             n = self._relation_count(nxt, ctx.schema)
+            self.stats[f"lookahead_{a.kind}_seconds"] += time.perf_counter() - t0
+            self.stats[f"lookahead_{a.kind}_actions"] += 1
             tok = int(max(n, 0) * self._row_tokens(nxt, ctx, n))
             out.append(Action(a.kind, a.table, a.anchor, a.edge, lookahead_rows=n, lookahead_tokens=tok))
         return out
@@ -283,11 +315,7 @@ class TableEnv:
         body = from_where(schema, s.visited, s.joins, s.anchors)
         sel = ", ".join(column_sql(schema, k) for k in cols)
         con = self._conn(s.instance.db_ref)
-        try:
-            rows = run(con, f"SELECT {sel} {body} ORDER BY {order}", 30.0, self.cfg.max_fetch_rows + 1)
-        except Exception:  # e.g. WITHOUT ROWID tables: fall back to ordering by the shown columns
-            rows = run(con, f"SELECT {sel} {body} ORDER BY {', '.join(str(i + 1) for i in range(len(cols)))}",
-                       30.0, self.cfg.max_fetch_rows + 1)
+        rows, timed_out = self._fetch(con, s, sel, body, order, len(cols))
         total = s.n_rows if s.n_rows >= 0 else len(rows)
         text = "\n".join(lines)
         used = self.counter.count(text)
@@ -310,4 +338,32 @@ class TableEnv:
                 text = text.rsplit("\n", 1)[0]
                 shown -= 1
                 used = self.counter.count(text)
-        return Materialised(text, int(used), max(total, len(rows)), shown, cols, shown < len(rows))
+        return Materialised(text, int(used), max(total, len(rows)), shown, cols, shown < len(rows), timed_out)
+
+    def _fetch(self, con, s: State, sel: str, body: str, order: str, n_cols: int) -> tuple[list, bool]:
+        """Rows of the sub-table, at most max_fetch_rows + 1, in a deterministic order.
+
+        Relations below the look-ahead cap are sorted by the visited tables' rowids (small and
+        fast; the order Track C used). Huge or unknown-size relations (n_rows at the cap or -1)
+        are read in SQLite's scan order with a SQL LIMIT, so SQLite stops early instead of sorting
+        millions of joined rows — deterministic for a fixed DB file, its indexes and SQLite build.
+        A timeout gives an empty sub-table (timed_out=True) instead of an exception."""
+        limit = self.cfg.max_fetch_rows + 1
+        t0 = time.perf_counter()
+        try:
+            if 0 <= s.n_rows < self.cfg.lookahead_cap:
+                try:
+                    rows = run(con, f"SELECT {sel} {body} ORDER BY {order}", self.cfg.fetch_timeout_s, limit)
+                except sqlite3.OperationalError:  # WITHOUT ROWID tables have no rowid: order by the shown columns
+                    rows = run(con, f"SELECT {sel} {body} ORDER BY {', '.join(str(i + 1) for i in range(n_cols))}",
+                               self.cfg.fetch_timeout_s, limit)
+            else:
+                self.stats["materialise_unordered"] += 1
+                rows = run(con, f"SELECT {sel} {body} LIMIT {limit}", self.cfg.fetch_timeout_s)
+            return rows, False
+        except QueryTimeout:
+            self.stats["materialise_timeouts"] += 1
+            return [], True
+        finally:
+            self.stats["materialise_calls"] += 1
+            self.stats["materialise_seconds"] += time.perf_counter() - t0

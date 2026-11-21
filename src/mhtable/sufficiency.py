@@ -50,6 +50,8 @@ def sufficient(env, state: State, mat, gold: GoldRecord, _cache: dict | None = N
     gold_tables = sorted(es["rowids"])
     if not set(gold_tables) <= set(state.visited):
         return False
+    if state.n_rows < 0:  # look-ahead timed out: the row-id comparison would time out too
+        return False
     monotone = gold.monotone is True
     if not monotone and (set(state.visited) != set(gold_tables) or state.n_rows != es["rows"]):
         return False
@@ -93,6 +95,8 @@ def entity_overlap(env, state: State, gold: GoldRecord, _cache: dict | None = No
         return []
     hops = gold_hops(gold)
     tables = sorted(es["rowids"])
+    if state.n_rows < 0:  # size unknown (look-ahead timed out): comparison treated as unknown
+        return []
     seen = [t for t in tables if t in state.visited]
     mine: dict[str, set] = {}
     if seen:

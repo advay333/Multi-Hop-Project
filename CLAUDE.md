@@ -35,6 +35,11 @@ short-horizon, small-action regime?
   indexes on join/anchor columns → `data-v4`, a row-count cap, or excluding the largest DBs).
   Train on Spider+MMQA first. The data-v3 per-tier oracle `fail_reasons` were not seen (molab
   session lost); `stats/bird.json` on HF has them if the build pushed `stats/`.
+- **Track B code — done 2026-11-21** (118 tests; PLAN §4a): `env/sqlindex.py` (SQLite indexes
+  on join/filter columns of large tables -> `data-v4`), look-ahead memo + bounded `materialise`
+  in `env/env.py`, `analysis/speed.py`, `coverage.py --per-db`, `storage download|push-large|tag`
+  CLI. **molab run pending:** `notebooks/track_b.py` (CPU, ~50 GB disk; push/tag are separate
+  buttons). After data-v4: BIRD configs use `data.revision: data-v4`; Spider+MMQA can stay on v3.
 - **Compute:** Prajna access works since 2026-11-21 (account `cs769_02`; partitions and limits in
   the Prajna section below) and becomes the main compute once the `slurm/` scripts exist and
   internet access on compute nodes is confirmed; molab remains the fallback.
@@ -181,11 +186,19 @@ or 2FA codes in the repo.
   whether `/scratch` is shared by all users or node-local before relying on it; the safer
   default for caches is a folder under `/home`.
 
-**Still to confirm** (needs a short job, not the login node):
-- Whether **compute nodes have internet access** (HF downloads, pip), the GPU driver / CUDA
-  (vLLM needs a recent driver) and whether `/scratch` is shared — one interactive job:
-  `srun -p interactive --qos=interactive --gres=gpu:1 -t 00:10:00 bash -c 'hostname; curl -sI https://huggingface.co | head -1; nvidia-smi; df -h /scratch'`.
-  If no internet: download data and models on the login node, then run jobs with `HF_HUB_OFFLINE=1`.
+**First batch job (2026-11-21, `sbatch` on `a40`, node cn25-a40) — works with
+`--partition=a40 --qos=a40 --account=cs769_02`:**
+- **GPU driver 570.86.15, CUDA 12.8** (A40 = Ampere, bf16 supported). molab ran vLLM 0.34 with
+  torch built for CUDA 13; on Prajna torch/vLLM must be **CUDA 12.8 (cu128) builds** — a cu13
+  wheel will not run on this driver. Pin the cu128 torch index when installing.
+- `/scratch` on the compute node is the same `slurm:/scratch` (250 GB, same usage as on the login
+  node), so it is shared between login and compute nodes — but small; prefer `/home` (no quota).
+- **Internet on compute nodes: probably none.** Both `curl` lines printed nothing (the script's
+  `|| echo` fallback was attached to `head`, so a failed `curl` stays silent). Plan for offline
+  jobs: install packages and download data + models on the login node into `/home`, run jobs
+  with `HF_HUB_OFFLINE=1`. To confirm explicitly:
+  `curl -s -o /dev/null -w "%{http_code}\n" --max-time 15 https://huggingface.co || echo FAILED`
+  inside a batch job.
 
 ## Rules for agents
 

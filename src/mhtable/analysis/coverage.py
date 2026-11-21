@@ -100,7 +100,14 @@ def coverage(env: TableEnv, items, cfg: ActionConfig) -> dict:
     step_total, step_hit = Counter(), Counter()
     reasons = Counter()
     sizes = []
+    db_seconds, last_db, t_db = Counter(), None, time.perf_counter()
+    env.stats.clear()
     for inst, gold in items:
+        if inst.db_ref != last_db:
+            if last_db is not None:
+                print(f"  coverage {last_db}: {time.perf_counter() - t_db:.0f}s", file=sys.stderr, flush=True)
+            last_db, t_db = inst.db_ref, time.perf_counter()
+        t_inst = time.perf_counter()
         n += 1
         s = env.reset(inst)
         ok = True
@@ -119,11 +126,17 @@ def coverage(env: TableEnv, items, cfg: ActionConfig) -> dict:
             if done:
                 break
         reach += ok
+        db_seconds[inst.db_ref] += time.perf_counter() - t_inst
+    st = env.stats
+    q = st["lookahead_queries"]
     return {
         "instances": n, "reachable": reach, "reachability": round(reach / n, 4) if n else None,
         "step_coverage": {k: f"{step_hit[k]}/{step_total[k]} = {step_hit[k] / step_total[k]:.3f}" for k in step_total},
         "missing_reasons": dict(reasons.most_common()),
         "candidates_per_state": dict(sorted(Counter(min(x, 30) for x in sizes).items())),
+        "lookahead": {"queries": q, "timeout_rate": round(st["lookahead_timeouts"] / q, 4) if q else None,
+                      "mean_s": round(st["lookahead_seconds"] / q, 4) if q else None},
+        "slowest_dbs_s": {k: round(v, 1) for k, v in db_seconds.most_common(8)},
     }
 
 
@@ -143,6 +156,8 @@ def edge_threshold(env: TableEnv, items, recall: float = 0.98) -> dict:
 def random_rollouts(env: TableEnv, items, episodes: int, seed: int = 0) -> dict:
     rng = random.Random(seed)
     lengths, sizes, crashes, rows = Counter(), [], [], []
+    fetch_timeouts, t0 = 0, time.perf_counter()
+    q0, to0 = env.stats["lookahead_queries"], env.stats["lookahead_timeouts"]
     for i in range(episodes):
         inst, _ = items[rng.randrange(len(items))]
         try:
@@ -152,11 +167,17 @@ def random_rollouts(env: TableEnv, items, episodes: int, seed: int = 0) -> dict:
                 sizes.append(len(cands))
                 s, done = env.step(s, rng.choice(cands))
             lengths[s.t] += 1
-            rows.append(env.materialise(s).rows_total)
+            m = env.materialise(s)
+            rows.append(m.rows_total)
+            fetch_timeouts += m.timed_out
         except Exception:
             crashes.append((inst.instance_id, traceback.format_exc(limit=2)))
     sizes.sort()
-    return {"episodes": episodes, "crashes": len(crashes), "crash_examples": crashes[:3],
+    return {"episodes": episodes, "seconds": round(time.perf_counter() - t0, 1), "crashes": len(crashes),
+            "materialise_timeouts": fetch_timeouts, "crash_examples": crashes[:3],
+            "lookahead": {"queries": env.stats["lookahead_queries"] - q0,
+                          "timeout_rate": round((env.stats["lookahead_timeouts"] - to0)
+                                                / max(env.stats["lookahead_queries"] - q0, 1), 4)},
             "episode_length": dict(sorted(lengths.items())),
             "candidates_per_state": {"mean": round(sum(sizes) / len(sizes), 2), "max": sizes[-1],
                                      "p50": sizes[len(sizes) // 2]},
@@ -172,16 +193,35 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--edge-threshold", type=float, default=None, help="default: tuned for 98%% gold-edge recall")
     p.add_argument("--edges", choices=["inferred", "declared"], default="inferred")
     p.add_argument("--random-episodes", type=int, default=1000)
-    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--limit", type=int, default=None, help="first N questions per tier (file order = grouped by DB)")
+    p.add_argument("--per-db", type=int, default=None,
+                   help="instead of --limit: N random questions from every database (seeded)")
+    p.add_argument("--dbs", nargs="*", default=None, help="only these db_refs")
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, default=None)
     args = p.parse_args(argv)
 
     data = EnvData(args.data_dir, args.index_dir)
     items = load(args.data_dir, args.family, args.split)
-    report = {"family": args.family, "split": args.split, "edges": args.edges}
+    if args.dbs:
+        items = [x for x in items if x[0].db_ref in args.dbs]
+
+    def sample(xs):
+        if args.per_db is None:
+            return xs[: args.limit]
+        by_db = {}
+        for x in xs:
+            by_db.setdefault(x[0].db_ref, []).append(x)
+        rng, out = random.Random(args.seed), []
+        for ref in sorted(by_db):
+            group = by_db[ref]
+            out += sorted(rng.sample(group, min(args.per_db, len(group))), key=lambda x: x[0].instance_id)
+        return out
+    report = {"family": args.family, "split": args.split, "edges": args.edges,
+              "sample": {"limit": args.limit, "per_db": args.per_db, "dbs": args.dbs, "seed": args.seed}}
     t0 = time.time()
 
-    relaxed_items = [x for x in items if x[0].tier["relaxed"]][: args.limit]
+    relaxed_items = sample([x for x in items if x[0].tier["relaxed"]])
     probe = TableEnv(EnvConfig(), data)
     report["edge_omega"] = edge_threshold(probe, relaxed_items)
     tau = args.edge_threshold if args.edge_threshold is not None else report["edge_omega"]["threshold_for_98pct_recall"]
@@ -190,7 +230,9 @@ def main(argv: list[str] | None = None) -> int:
     for tier in ("strict", "relaxed"):
         cfg = ActionConfig(tier=tier, edges=args.edges, edge_threshold=tau)
         env = TableEnv(EnvConfig(actions=cfg), data)
-        tier_items = [x for x in items if x[0].tier[tier]][: args.limit]
+        tier_items = sample([x for x in items if x[0].tier[tier]])
+        print(f"[{tier}] {len(tier_items)} questions from {len({x[0].db_ref for x in tier_items})} databases",
+              file=sys.stderr, flush=True)
         report[tier] = coverage(env, tier_items, cfg)
         report[tier]["random_policy"] = random_rollouts(env, tier_items, args.random_episodes)
         env.close()

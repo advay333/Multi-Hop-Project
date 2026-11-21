@@ -282,6 +282,24 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   hinges on whether the reader answers worse from whole databases (it must do the joins itself)
   than from the selected sub-table; selection's other gains are fewer tokens and the hard cases
   (BIRD, larger tables). The real-reader run settles it.
+- **Real-reader results (molab 2026-11-21, `notebooks/track_c.py`, full dev 394 / 458, Qwen2.5-7B
+  p1 bf16, data-v3) — P6 gate passed, P7 gate passed:**
+
+  | Selector | EM strict / relaxed | set-F1 | path match | answer shown | tokens |
+  |---|---|---|---|---|---|
+  | oracle (ceiling) | 51.3% / 50.0% | 0.69 / 0.67 | 88.3% / 83.0% | 89% / 87% | 575 / 549 |
+  | B1 truncate | 16.5% / 15.7% | 0.43 / 0.42 | — | 93% / 93% | 1,061 / 1,041 |
+  | B2 random rows | 9.6% / 9.8% | 0.37 / 0.37 | — | 92% / 92% | 937 / 919 |
+  | heuristic (bge-m3) | 21.1% / 20.1% | 0.36 / 0.36 | 22.1% / 18.8% | 55% / 53% | 470 / 436 |
+  | **BC (bge-m3)** | **28.9% / 28.2%** | 0.45 / 0.45 | **44.9% / 38.4%** | 66% / 63% | 569 / 507 |
+
+  **Selection matters:** whole tables contain the answer 93% of the time, yet the reader gets only
+  16% right from them (it has to do the joins itself) vs 51% from the gold sub-table — the
+  P4/P6 worry that B1 might rival the oracle is settled. **BC beats the heuristic** on join-path
+  accuracy (44.9 vs 22.1 / 38.4 vs 18.8) and EM; bge-m3 lifted BC's dev path match from 31.5 /
+  25.3 (hash) to 44.9 / 38.4, but the train–dev gap remains (train subset 84.7% / 78.7%). RL
+  headroom on dev: BC 29% → ceiling 51% / 50%. BC trained in ~3 min per tier (best epoch 25 / 20).
+  Reader throughput at full-dev batches: 60–90k calls/h.
 - Selectors: B1 truncate, B2 random rows, heuristic (greedy cosine + top-k), oracle sub-table.
 - **Gate:** numbers on dev for each; the oracle ceiling tells us how much headroom the reader leaves.
 
@@ -399,6 +417,23 @@ eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index
   BIRD will be equally slow** until fixed. Candidate fixes: SQLite indexes on join/anchor columns
   (changes the DB files -> `data-v4`), a much shorter look-ahead timeout or row-count cap for huge
   tables, or excluding the largest DBs. Spider+MMQA are unaffected.
+- **Track B — code done 2026-11-21 (118 tests); molab run pending (`notebooks/track_b.py`).**
+  Cause: a JOIN on an unindexed column makes SQLite build a temporary ("automatic") index inside
+  every look-ahead query; an equality filter on an unindexed column scans the whole table.
+  Laptop check on a synthetic 1M x 1M-row join: look-ahead COUNT 28 s -> 0.016 s with permanent
+  indexes. Fix: (1) `env/sqlindex.py` builds indexes on join and anchor-able columns of tables
+  with >= 50k rows (small DBs untouched, results unchanged) -> pushed as **`data-v4`** = data-v3 +
+  indexed BIRD DBs; (2) env: look-ahead memo on (db, SQL), `materialise` reads huge / unknown-size
+  relations unordered with a SQL LIMIT and returns an empty sub-table on timeout instead of
+  crashing (the old path retried a 30 s sort and then raised, which coverage counted as a crash);
+  sufficiency / entity-overlap skip relations of unknown size; (3) `analysis/speed.py` (per-DB
+  timings + query plans) and `coverage.py --per-db` (BIRD instances are grouped by DB, so the old
+  `--limit 500` only covered the first DBs). Small-relation output is byte-identical (Track C
+  numbers stand). Notebook: download -> speed before -> index -> speed after -> coverage on 15
+  questions per DB (train + bird_dev) -> push + tag data-v4 (separate buttons).
+  **Still to check after the run:** look-ahead timeout (-1) rate on BIRD — the 2 s timeout is
+  wall-clock, so -1 features are hardware-dependent; if the rate is not near 0, raise the timeout
+  before P9 on BIRD.
 - **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
   10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
   embedding similarity (P4) and a runtime exact-value probe.

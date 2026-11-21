@@ -281,6 +281,7 @@ identifier spellings. Shared by the oracle and the environment so both define R_
 | `env/index.py` | `SchemaGraph`, DB | `DbIndex` per database, stored as `index/<db_ref>.json`: column stats (rows, distinct, uniqueness u, numeric, min/max, avg length); candidate joins with JAR features (e name similarity — identically named text columns get at least 0.5, since `name` is a stopword — j value containment, u, ω = (e + j)·max u, halved for id-to-id pairs); cell index (≤10,000 most frequent values per non-ID column). `CellSearch.lookup(text)` → top (column, value, score) |
 | `env/actions.py` | `State`, `EpisodeContext`, `ActionConfig` (tier, edges mode, threshold, caps) | legal candidate actions under the masking rules |
 | `env/env.py` | `EnvConfig`, `EnvData` (local repo copy or HF) | `TableEnv` (below) |
+| `env/sqlindex.py` | local real-file copy of `db/`, `schemas/`, `index/` | SQLite indexes in place on large tables (≥ 50k rows): both sides of candidate joins (ω ≥ 0.5 or declared; composite edges → one composite index) and anchor-able columns (cell-index or numeric, avg ≤ 64 chars); skips columns an index already leads; small DBs untouched; `db_index_manifest.json`. Changes speed only, never results (Track B, data-v4) |
 
 ```python
 class TableEnv:
@@ -309,12 +310,20 @@ quoted phrases / "the letter x" / partial matches / date prefixes (`release_date
 "February 2017" → `'2017-02%'`).
 
 **Look-ahead:** every candidate carries the capped COUNT(*) of the relation it leads to and an
-estimated token count — cardinality estimation, not gold information.
+estimated token count — cardinality estimation, not gold information. A count that exceeds
+`lookahead_timeout_s` (2 s, wall-clock) is reported as −1 (unknown; a feature flag). Counts are
+memoised per env on (db_ref, SQL) — the count depends only on the relation, so it is computed
+once per process (`lookahead_memo`, cleared when full). `TableEnv.stats` / `slow_queries` record
+timings for `analysis/speed.py`. On BIRD the speed depends on the SQLite indexes of data-v4
+(`env/sqlindex.py`): an unindexed JOIN makes SQLite build a temporary index inside every query.
 
 `materialise` projects onto join keys, anchor columns and the other columns of the visited
 tables ranked by question relevance — as many as let all rows fit B (estimated), at least 4
 (`project_all_columns`; off = exactly the top 4, the pre-2026-11-18 behaviour) — orders rows deterministically by rowid, and cuts rows to fit B tokens
-(`overflow` flag). The budget is counted by `env/tokens.py`: 3.5 chars/token by default
+(`overflow` flag). Relations at the look-ahead cap (≥ 100k rows) or of unknown size are read
+without ORDER BY with a SQL LIMIT (scan order; deterministic for a fixed DB file, its indexes and
+SQLite build) so SQLite never sorts millions of joined rows; a fetch timeout
+(`fetch_timeout_s`, 30 s) gives an empty sub-table with `timed_out=True` instead of a crash. The budget is counted by `env/tokens.py`: 3.5 chars/token by default
 (`env.tokenizer: null`, mock-reader runs), or the reader's own tokenizer (`env.tokenizer: reader`
 or a model name; rows are counted in blocks, then the joined text is re-counted so the result is
 exact). Look-ahead token estimates stay character-based. The environment never imports the
@@ -326,7 +335,10 @@ misses, the edge threshold for 98% gold-join recall, and random-policy smoke tes
 databases). `analysis/reach.py` measures the same reachability **without databases** —
 membership in the candidate set depends only on question, schema and index — so BIRD coverage
 runs on the laptop; it also reports *sole blockers* (questions whose only missing reason is X)
-and |A(s)|. Its numbers matched `coverage.py` exactly on data-v2.
+and |A(s)|. Its numbers matched `coverage.py` exactly on data-v2. `coverage.py --per-db N`
+samples N questions from every database (instance files are grouped by DB, so `--limit` alone
+only reaches the first few). `analysis/speed.py` profiles look-ahead / materialise time per
+database with random episodes and prints SQLite's query plan for the slowest look-aheads.
 
 ### 6.5 Models
 
@@ -588,6 +600,9 @@ a 20-question PPO overfit with the mock reader (gate G-8, marked slow).
   nothing; these are excluded via `fail_reasons`.
 - **MMQA's embedded tables contain mojibake** ("MisÃ©rables"); repaired at materialisation.
 - **15% of Spider questions return an empty answer** on Spider's own databases; excluded.
+- **BIRD's largest databases are slow without indexes** (`movie_platform`, `talkingdata`: tables
+  of millions of rows). data-v4 adds SQLite indexes (`env/sqlindex.py`); without them look-aheads
+  time out (−1) and the environment check ran 90+ min without finishing one tier.
 
 ## 12. Glossary
 

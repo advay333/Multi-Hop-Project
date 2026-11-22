@@ -27,6 +27,17 @@ uv pip install "vllm==${VLLM_VERSION}+${CU}" \
 
 pip install -e ".[dev,train,p4]"   # transformers, sentence-transformers (after vllm, so its torch pin stays)
 
+# Python C headers for Triton's runtime C build (the system lacks python3.11-devel and we have no
+# root). uv downloads a standalone Python of the same minor version, which ships the headers;
+# slurm/gpu_env.sh points gcc at them (C_INCLUDE_PATH) only when the system copy is missing.
+PYV="$(python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+echo "== Python $PYV headers into ~/mhtable-pyinclude"
+uv python install "$PYV" --install-dir "$HOME/mhtable-python"
+hdr="$(find "$HOME/mhtable-python" -path "*/include/python$PYV/Python.h" | head -1)"
+[ -n "$hdr" ] || { echo "FAIL: no Python.h found under ~/mhtable-python - tell the agent"; exit 1; }
+ln -sfn "$(dirname "$hdr")" "$HOME/mhtable-pyinclude"
+ls -l "$HOME/mhtable-pyinclude"
+
 python - <<'EOF'
 import pathlib, sys, torch
 cuda = torch.version.cuda or "none"

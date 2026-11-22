@@ -86,8 +86,14 @@ short-horizon, small-action regime?
 - **Prajna:**
   - Done: `slurm/setup_env.sh`, `fetch_data.sh` and the `g8.sh` array; the user ran the G-8 sweep. Venv `~/mhtable-venv`, data `~/mhtable-data/v4`, runs `~/mhtable-runs`; submit from the repo root, logs in `slurm/logs/`.
   - Reader setup: first `reader_smoke` (2026-11-22) failed — the default vLLM wheel is a CUDA 13
-    build; `setup_reader.sh` now installs the cu129 build (see "First batch job" below). Re-run
-    `setup_reader.sh`, then `reader_smoke.sh`.
+    build; `setup_reader.sh` now installs the cu129 build (see "First batch job" below). Third
+    smoke (cn43-l40): torch 2.11.0+cu129 + vllm 0.24.0 see the GPU and load Qwen2.5-7B offline
+    from `~/.cache/huggingface` — the CUDA problem is solved — but vLLM's compile step then
+    failed: Triton builds a small C helper with gcc, which needs Python's headers (`Python.h`;
+    the system has no python3.11-devel). Fix: `setup_reader.sh` downloads standalone Python
+    headers to `~/mhtable-pyinclude` (via `uv python install`), and **every GPU job sources
+    `slurm/gpu_env.sh`** (venv, `HF_HUB_OFFLINE=1`, `C_INCLUDE_PATH`, a C build check). Oracle EM
+    result pending.
   - Next gate: BC → PPO on dev with the real reader (PLAN P9).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +

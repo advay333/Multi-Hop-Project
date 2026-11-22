@@ -1,0 +1,11 @@
+# Step-level ("process") GRPO with the real reader: the P9 ablation (PLAN.md P9). It is
+# grpo_real.yaml with advantage = process, where each step's advantage = GAE(gamma 1, process_lam)
+# with V == 0, minus the group mean at the same step index (algos/grpo.py docstring).
+# process_lam must be < 1 for the R1 shaping to matter: at 1 it telescopes to a state-only term.
+# On Prajna: slurm/p9_process.sh (needs LR= and LAM=).
+_base_: [grpo_real.yaml]
+
+algo:
+  name: grpo
+  advantage: process
+  process_lam: 0.5   # overridden by slurm/p9_process.sh

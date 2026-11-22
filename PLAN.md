@@ -428,9 +428,15 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   "stop early".
 - **Design point for the grid (user to note):** GRPO scores whole episodes, and potential-based
   shaping telescopes over an episode (sum = −β·Φ(start), the same for every rollout in a group).
-  So **outcome GRPO ignores the shaping**: its R1 and R0 cells differ only through the curriculum,
-  whereas PPO's critic can use the per-step shaping. That is part of the PPO-vs-GRPO contrast, not a bug; a
-  per-step ("process") GRPO variant would be the way to give GRPO the shaping, if wanted.
+  So **outcome GRPO ignores the shaping**.
+  - *Corrected 2026-11-23:* the curriculum is the same for R0 and R1, and every rollout in a group starts from the same state (`rollout.py`). So GRPO-R1 and GRPO-R0 give identical advantages and are expected to be the same run up to floating-point rounding. The grid runs both anyway, as an empirical check.
+  - The same reasoning limits PPO. With γ = 1, the shaping from step t to the end is −β·Φ(s_t), a state-only term, so a Monte-Carlo estimator sees it only as a baseline. The shaping reaches PPO's actor only through GAE truncation (λ = 0.95: weight 1 − λ^k, small over ~3.4 steps) and through the critic's bootstrapping. This fits the P8 observation that R1 and R0 were indistinguishable. Expect a small R axis for PPO too.
+- **Process-GRPO ablation (code done 2026-11-23, not run; separate from the main grid).**
+  - `algo.advantage: process` in `algos/grpo.py`: per step, GAE(γ 1, `process_lam`) with V ≡ 0, minus the group mean at the same step index. It is a critic-free mirror of PPO's estimator, so PPO vs process-GRPO at the same λ isolates the learned critic.
+  - It sees the shaping only when λ < 1. Tests: `test_grpo_process_*`, 127 tests pass.
+  - The DeepSeekMath form (sum of normalised future step rewards) was rejected for two reasons: the shaping still telescopes to a state-only term, and subtracting the pooled mean gives a per-step length penalty (the same "stop early" failure as std-normalisation).
+  - Config: `configs/experiments/grpo_process_real.yaml`. Script: `slurm/p9_process.sh` (array 0–1 = R1 strict / relaxed; needs `LR=` and `LAM=`).
+  - **Open: choose λ.** λ = 0.95 matches PPO (a clean critic contrast, but the shaping barely matters); a small λ (e.g. 0.5) makes the shaping matter.
 - **Prajna reader — DONE 2026-11-22** (`slurm/setup_reader.sh`, `fetch_models.sh`,
   `reader_smoke.sh`, `gpu_env.sh`). Two fixes were needed: (1) the default vLLM 0.24.0 wheel is a
   CUDA 13 build (`libcudart.so.13` missing on the 570 driver) → `vllm==0.24.0+cu129` + torch
@@ -465,12 +471,45 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - **Smoke tests passed 2026-11-22** (`bc_bge.sh` and `ppo_gate.sh` with `SMOKE=1`, L40S): data, embedding cache and reader all load offline, and the real reader runs inside the RL loop.
   - PPO's iteration-0 evaluation equals `evaluate.py`'s BC score exactly (EM 0.02, 353.98 tokens), so the in-run curve and the evaluator agree.
   - Timing: ~2 s per 16-episode iteration once warm, so a full PPO run is about 2–5 h (pending the full runs). `ppo_gate.sh` limit cut to 12 h.
+- **BC on Prajna — done 2026-11-22** (`bc_bge.sh`, full run; training takes minutes, as on molab where it took ~3 min per tier). Real-reader full-dev scores (`p-bc-<tier>-dev`):
+
+  | Tier | n | EM | set-F1 | path match | answer in sub-table | tokens | molab Track C EM |
+  |---|---|---|---|---|---|---|---|
+  | strict | 394 | **32.2%** | 47.5% | 44.2% | 67.6% | 574 | 28.9% |
+  | relaxed | 458 | **27.5%** | 44.4% | 38.9% | 63.0% | 515 | 28.2% |
+
+  The strict tier is +3.3 pts over molab and relaxed is −0.7. Both are within about ±4.5 pts of dev noise; differences from molab: the budget is counted with the reader tokenizer, and vLLM is 0.24 instead of 0.34. Reader throughput was ~50k calls/h at full batches. These are the BC numbers for the gate.
 - **Grid and test scripts written 2026-11-22, not yet run.**
   - `configs/experiments/grpo_real.yaml` (= `grpo.yaml` + `eval.yaml`; sets `algo.name: grpo` explicitly, because `eval.yaml` re-applies `base.yaml`).
   - `slurm/p9_grid.sh` (array 0–7 = {ppo, grpo} × {R1, R0} × {strict, relaxed}, seed 0). One actor lr for all arms (`LR=`, chosen at the gate). Tasks 0–1 are the gate runs: not retrained, only scored.
   - Every task scores its best-dev checkpoint on the **test** split (`t-<run>-test`).
   - `slurm/baselines_test.sh` (one job): oracle, B1 truncate, B2 random_rows, heuristic and BC on test with the same vLLM.
-- Remaining: run the full gate, choose the lr, run the grid and the test baselines, then the P9 table and plots.
+- **Gate run DONE 2026-11-22** (`slurm/ppo_gate.sh`, l40, ~1 h per run rather than the 2–5 h estimated; results copied to the laptop in `runs/prajna/`). In-run dev EM, BC start → every 25 iterations → 300:
+
+  | Run | it 0 (BC) | best (iteration) | final (300) | gate | policy.pt re-score on dev | reader calls |
+  |---|---|---|---|---|---|---|
+  | strict lr 1e-5 | 32.0 | 34.0 (75) | 32.0 | PASS (equal) | 34.3 | 4.8k |
+  | strict lr 3e-4 | 32.2 | 32.5 (225) | 32.0 | FAIL | 33.3 | 9.2k |
+  | relaxed lr 1e-5 | 27.5 | 32.1 (125) | 30.3 | PASS | 32.1 | 5.4k |
+  | relaxed lr 3e-4 | 27.7 | 32.3 (300) | 32.3 | PASS | 32.8 | 10.9k |
+
+  - Strict at lr 3e-4 drops to 27.2 after 25 iterations and takes ~200 iterations to recover (the Track A step-size problem). At lr 1e-5 strict stays within 32–34 throughout.
+  - Relaxed improves at both lrs (+3–5 pts), noisily.
+  - Dev has n ≈ 400, so one standard error is ≈ 2.3 pts. All the gains are 1–2 SE: PPO helps a little over BC, which is not yet a strong result.
+  - **Choice: grid LR = 1e-5.** Reasons: it is stable on both tiers, it matches the Track A diagnosis, and it needs half the reader calls. Tasks 0–1 of `p9_grid.sh` reuse the lr 1e-5 gate runs.
+- **Test baselines DONE 2026-11-22** (`slurm/baselines_test.sh`, on an a40, which works too). Test split, strict / relaxed:
+
+  | Selector | EM | set-F1 | path match | answer in sub-table | tokens |
+  |---|---|---|---|---|---|
+  | oracle (gold path, ceiling) | 46.4 / 44.8 | 61.1 / 59.1 | 88.9 / 84.3 | 78.9 / 76.4 | 747 / 726 |
+  | BC (bge-m3) | 28.0 / 26.8 | 42.1 / 41.2 | 37.7 / 32.6 | 58.7 / 57.1 | 796 / 755 |
+  | heuristic | 20.5 / 20.0 | 32.7 / 32.0 | 19.4 / 16.5 | 48.2 / 45.8 | 628 / 615 |
+  | B1 truncate | 12.5 / 13.0 | 34.4 / 34.4 | – | 83.5 / 82.2 | 1672 / 1648 |
+  | B2 random rows | 10.6 / 10.9 | 32.0 / 31.6 | – | 80.1 / 79.1 | 1406 / 1390 |
+
+  - The test oracle is lower than on dev (46 vs 59 strict), so test questions are harder for the reader.
+  - B1 and B2 show the answer 80%+ of the time but score ≤ 13% EM. Whole tables confuse the reader, so the dry-run worry that B1 would be a strong baseline did not come true.
+- Remaining: the grid (`sbatch --export=ALL,LR=1e-5 ...`, tasks 2–7, plus tasks 0–1 for test scoring), then the P9 table and plots.
 - GRPO (G = 8 rollouts per question, group-normalised return, KL to BC); log the zero-advantage fraction.
 - 2×2 grid {PPO, GRPO} × {R0, R1}, curves plotted against **reader calls**, not gradient steps.
 - **Gate:** the 2×2 table on dev; then test numbers with 3 seeds once the setup is frozen.

@@ -463,6 +463,60 @@ def test_grpo_identical_returns_give_zero_advantage(setup):
         GRPO(policy, group_size=1)
 
 
+def _shaped(phis: list[float], r_ans: float, beta: float) -> list[float]:
+    """Per-step rewards of one episode through states with potentials phis (terminal Phi = 0)."""
+    phis = phis + [0.0]
+    rews = [beta * (phis[t + 1] - phis[t]) for t in range(len(phis) - 1)]
+    rews[-1] += r_ans
+    return rews
+
+
+def test_grpo_process_credits_the_step_that_raised_phi():
+    """Same start, same final answer; only rollout A's first action raises Phi. Under R1 with
+    lam < 1 its step-0 advantage must be higher; under R0, or at lam = 1 (shaping telescopes to a
+    state-only term), the two must be equal."""
+    from mhtable.algos.grpo import process_advantages
+
+    for beta, lam, differ in ((0.5, 0.5, True), (0.0, 0.5, False), (0.5, 1.0, False)):
+        a = _shaped([0.0, 0.5], 1.0, beta)   # step 0 raises Phi 0 -> 0.5
+        b = _shaped([0.0, 0.0], 1.0, beta)   # step 0 leaves Phi at 0
+        adv, _ = process_advantages([a, b], lam)
+        if differ:
+            assert adv[0][0] > adv[1][0]
+            assert adv[0][0] - adv[1][0] == pytest.approx(beta * 0.5 * (1 - lam))
+        else:
+            assert adv[0][0] == pytest.approx(adv[1][0])
+
+
+def test_grpo_process_baseline_is_per_step_index_not_own_length():
+    from mhtable.algos.grpo import process_advantages
+
+    adv, _ = process_advantages([[0.0, 0.0, 1.0], [1.0]], lam=1.0)
+    # t=0: raw 1 and 1 -> both 0; t=1,2: only rollout 0 runs -> its own baseline -> 0
+    assert adv == [[0.0, 0.0, 0.0], [0.0]]
+    adv, _ = process_advantages([[0.0, 1.0], [0.0, 0.0]], lam=1.0)
+    assert adv == [[0.5, 0.5], [-0.5, -0.5]]
+
+
+def test_grpo_process_mode_on_real_rollouts_and_outcome_unchanged(setup):
+    from mhtable.algos.grpo import GRPO, process_advantages
+
+    env, feat, policy, golds = setup
+    g = torch.Generator().manual_seed(1)
+    trajs = collect(env, PolicyActor(policy, feat), MockReader(), [_inst()] * 2, mode="sample",
+                    oracle_mode="reward", golds=golds, group_size=4, generator=g)
+    algo = GRPO(policy, group_size=4, advantage="process", process_lam=0.5, std_normalize=False)
+    batch = algo.compute_advantages(trajs)
+    want = []
+    for k in (0, 4):
+        pa, _ = process_advantages([[s.reward for s in tr.steps] for tr in trajs[k:k + 4]], 0.5)
+        want += [x for r in pa for x in r]
+    assert batch.advantage.tolist() == pytest.approx(want, abs=1e-6)
+    assert all(np.isfinite(v) for v in algo.update(batch).values())
+    with pytest.raises(ValueError):
+        GRPO(policy, group_size=4, advantage="nope")
+
+
 def test_train_entry_point_grpo_overfits_one_question(tmp_path, data_dir, gold):  # noqa: F811
     """G-8 in miniature for GRPO: random start, mock reader, groups of 8."""
     import json

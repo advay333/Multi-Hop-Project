@@ -1,0 +1,8 @@
+# PPO with the real reader (PLAN.md P9 gate and grid): ppo.yaml's algorithm and loop, plus
+# eval.yaml's reader (Qwen2.5-7B, vLLM, bf16, prompt p1), bge-m3 embedding cache and reader
+# tokenizer for the 4,096-token budget. Taking both from their own files means the reader that
+# gives the rewards is exactly the one used for evaluation.
+#   python -m mhtable.train --config configs/experiments/ppo_real.yaml --data-dir <data repo copy> \
+#       train.init=<bc run>/policy.pt env.tier=strict reward.variant=R1
+# On Prajna: slurm/ppo_gate.sh.
+_base_: [ppo.yaml, eval.yaml]

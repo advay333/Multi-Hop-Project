@@ -431,16 +431,38 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   So **outcome GRPO ignores the shaping**: its R1 and R0 cells differ only through the curriculum,
   whereas PPO's critic can use the per-step shaping. That is part of the PPO-vs-GRPO contrast, not a bug; a
   per-step ("process") GRPO variant would be the way to give GRPO the shaping, if wanted.
-- **Prajna reader setup 2026-11-22 — first smoke failed, fix written.** The default vLLM 0.24.0
-  wheel is a CUDA 13 build (`libcudart.so.13` missing on the 570 driver); compute nodes confirmed
-  offline. `setup_reader.sh` now installs `vllm==0.24.0+cu129` + torch cu129 and checks the
-  binaries for `libcudart.so.13` before finishing. (`slurm/setup_reader.sh` vLLM with a CUDA 12.x
-  torch, `slurm/fetch_models.sh` Qwen2.5-7B + bge-m3 + embedding cache, `slurm/reader_smoke.sh`
-  oracle + reader on 100 dev questions per tier, expected EM ≈ 50%). Every P9 run must use the
-  vLLM version that setup installs; baselines that enter the P9 table are re-evaluated on Prajna
-  with that same version (molab ran vLLM 0.34 on CUDA 13).
-- Remaining before the grid: the BC → PPO gate above, the P9 array script, and the tier/seed
-  layout (both tiers × 3 seeds = 24 runs, or both tiers for seed 0 only).
+- **Prajna reader — DONE 2026-11-22** (`slurm/setup_reader.sh`, `fetch_models.sh`,
+  `reader_smoke.sh`, `gpu_env.sh`). Two fixes were needed: (1) the default vLLM 0.24.0 wheel is a
+  CUDA 13 build (`libcudart.so.13` missing on the 570 driver) → `vllm==0.24.0+cu129` + torch
+  2.11.0+cu129; (2) Triton's runtime C build needs `Python.h` (no python3.11-devel on the nodes)
+  → standalone headers in `~/mhtable-pyinclude`, exported by `gpu_env.sh`, which every GPU job
+  sources. Compute nodes are offline (confirmed); models load from `~/.cache/huggingface`.
+  **Smoke result** (L40S, oracle selector + Qwen2.5-7B p1 bf16, 100 dev questions per tier):
+
+  | Tier | EM | set-F1 | answer in sub-table | EM when answer shown | tokens |
+  |---|---|---|---|---|---|
+  | strict | 59.0% | 72.6% | 91.5% | 61.8% | 427 |
+  | relaxed | 53.0% | 69.0% | 85.9% | 56.5% | 482 |
+
+  Matches molab's 7b-p1 ceiling (56.0% / 50.5%; differences are within the ±5 pt noise of
+  n = 100). Throughput 31k calls/h on this small batch (181 calls, mean prompt 578 tokens); molab
+  measured ~50k at full batches. Every P9 run uses this vLLM 0.24.0+cu129; baselines that enter
+  the P9 table are re-evaluated on Prajna with it (molab ran vLLM 0.34 on CUDA 13).
+- **BC → PPO gate — scripts written 2026-11-22, not yet run.**
+  - `slurm/bc_bge.sh` (array 0–1 = strict / relaxed): BC with bge-m3 (`bc_bge.yaml`, budget counted with the reader's tokenizer, unlike Track C), then the real-reader full-dev score (`p-bc-<tier>-dev`).
+  - `slurm/ppo_gate.sh` (array 0–3 = tier × actor lr {3e-4, 1e-5}): PPO-R1 with the real reader in the loop, through `configs/experiments/ppo_real.yaml` (= `ppo.yaml` + `eval.yaml`, so rewards come from the exact evaluation reader). Then the best-dev-EM checkpoint is scored the same way (`p-ppo-r1-<tier>-<lr>-s0-dev`).
+  - Both scripts have `SMOKE=1` modes. PPO tasks resume from `last.pt` when resubmitted.
+  - **Gate, read from the in-run dev curve** (`metrics.jsonl`; iteration 0 is the BC start; same reader and evaluator at every point): PPO's final dev EM ≥ its iteration-0 EM, and the best iteration ≠ 0.
+  - `python -m mhtable.analysis.gate ~/mhtable-runs` prints start, last and best dev EM plus PASS/FAIL per run. It also works mid-run.
+  - Not the gate: the re-score of `policy.pt`. That checkpoint is the best dev evaluation including iteration 0, so its score can never fall below BC.
+  - `p-bc-<tier>-dev` should match iteration 0 (a consistency check). The P9 table reports test.
+  - Submit `ppo_gate.sh` only after both BC tasks finish: l40 allows 5 submitted jobs per user, and 2 + 4 = 6.
+- **Seed layout — user decision 2026-11-22: one seed (s0) for now; add a second seed later if time permits.**
+  - Grid = {PPO, GRPO} × {R0, R1} × {strict, relaxed} × s0 = 8 runs.
+  - The two PPO-R1 gate runs at the chosen actor lr count as cells, so 6 new runs.
+  - Estimated ≈ 10–15 h wall time on l40 + a40 (≈ 7 running at once), to be re-estimated from the smoke timing.
+  - The report must say that PPO-vs-GRPO conclusions rest on a single seed. The question-level paired bootstrap covers question sampling, not seed noise.
+- Remaining before the grid: run the gate, then the P9 array script (GRPO with the real reader, plus the R0 cells).
 - GRPO (G = 8 rollouts per question, group-normalised return, KL to BC); log the zero-advantage fraction.
 - 2×2 grid {PPO, GRPO} × {R0, R1}, curves plotted against **reader calls**, not gradient steps.
 - **Gate:** the 2×2 table on dev; then test numbers with 3 seeds once the setup is frozen.

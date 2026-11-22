@@ -92,8 +92,16 @@ short-horizon, small-action regime?
     failed: Triton builds a small C helper with gcc, which needs Python's headers (`Python.h`;
     the system has no python3.11-devel). Fix: `setup_reader.sh` downloads standalone Python
     headers to `~/mhtable-pyinclude` (via `uv python install`), and **every GPU job sources
-    `slurm/gpu_env.sh`** (venv, `HF_HUB_OFFLINE=1`, `C_INCLUDE_PATH`, a C build check). Oracle EM
-    result pending.
+    `slurm/gpu_env.sh`** (venv, `HF_HUB_OFFLINE=1`, `C_INCLUDE_PATH`, a C build check).
+  - **Reader works on Prajna (2026-11-22):** smoke on L40S, oracle + Qwen2.5-7B, 100 dev
+    questions per tier: EM strict 59% / relaxed 53% (molab: 56.0% / 50.5%), 31k calls/h (PLAN P9).
+    Next: BC with bge-m3 → PPO on dev with the real reader (the P9 gate). Scripts written:
+    `slurm/bc_bge.sh` (array 0-1), then `slurm/ppo_gate.sh` (array 0-3,
+    `configs/experiments/ppo_real.yaml`); both have `SMOKE=1`; not yet run. Gate = the in-run
+    dev curve (final EM vs iteration 0 = BC), not the policy.pt re-score (that checkpoint
+    includes iteration 0, so it cannot fall below BC). PLAN P9.
+  - **P9 grid seeds (user decision 2026-11-22): seed 0 only for now** (8 cells, 2 of them = the
+    gate's PPO-R1 runs); a second seed later if time permits. Single-seed caveat goes in the report.
   - Next gate: BC → PPO on dev with the real reader (PLAN P9).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +

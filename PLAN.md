@@ -414,7 +414,27 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   collapsing. That run also measures reader calls per hour on Prajna, which sizes the grid.
 - **GRPO code done 2026-11-22** (`algos/grpo.py`, `configs/experiments/grpo.yaml`, 3 tests;
   124 tests pass; DESIGN §6.6).
-- **Prajna reader setup written 2026-11-22, not yet run** (`slurm/setup_reader.sh` vLLM with a CUDA 12.x
+- **GRPO 20-question check (laptop, data-v2, R1, 150 iterations, from scratch; PPO got 80%):**
+
+  | Setting | Greedy EM | Note |
+  |---|---|---|
+  | standard GRPO (divide by group std) | 30% | `zero_adv_frac` → 0.9–1.0; sub-tables shrink to ~220 tokens |
+  | + frozen temperature, entropy 0.05 | 30% | |
+  | **mean-only ("Dr. GRPO", new default)** | **75%** (best eval 85%) | ~480 tokens, like PPO |
+  | mean-only + entropy 0.05 | 60% | |
+
+  Cause of the failure: when every rollout in a group fails, their returns differ only by the token
+  cost (≈ 0.001), and dividing by the group std turns that into a ±1 advantage, which teaches
+  "stop early".
+- **Design point for the grid (user to note):** GRPO scores whole episodes, and potential-based
+  shaping telescopes over an episode (sum = −β·Φ(start), the same for every rollout in a group).
+  So **outcome GRPO ignores the shaping**: its R1 and R0 cells differ only through the curriculum,
+  whereas PPO's critic can use the per-step shaping. That is part of the PPO-vs-GRPO contrast, not a bug; a
+  per-step ("process") GRPO variant would be the way to give GRPO the shaping, if wanted.
+- **Prajna reader setup 2026-11-22 — first smoke failed, fix written.** The default vLLM 0.24.0
+  wheel is a CUDA 13 build (`libcudart.so.13` missing on the 570 driver); compute nodes confirmed
+  offline. `setup_reader.sh` now installs `vllm==0.24.0+cu129` + torch cu129 and checks the
+  binaries for `libcudart.so.13` before finishing. (`slurm/setup_reader.sh` vLLM with a CUDA 12.x
   torch, `slurm/fetch_models.sh` Qwen2.5-7B + bge-m3 + embedding cache, `slurm/reader_smoke.sh`
   oracle + reader on 100 dev questions per tier, expected EM ≈ 50%). Every P9 run must use the
   vLLM version that setup installs; baselines that enter the P9 table are re-evaluated on Prajna

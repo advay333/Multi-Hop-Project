@@ -44,7 +44,8 @@ short-horizon, small-action regime?
   files identical to v3). The BIRD "Open" item above is closed.
 - **Compute:** Prajna access works since 2026-11-21 (account `cs769_02`; partitions and limits in
   the Prajna section below) and becomes the main compute once the `slurm/` scripts exist and
-  internet access on compute nodes is confirmed; molab remains the fallback.
+  the reader runs there (compute nodes have no internet: everything is fetched on the login
+  node); molab remains the fallback.
 - **P5 learning core — done 2026-11-17** (built before P4 because it needs no molab run; 93 tests
   pass): `featurise.py`, `policies/mlp.py`, `rewards.py`, `rollout.py`, `algos/base.py`,
   `firewall.py`, `sufficiency.py`, plus the reader/encoder interface slices (`readers/base.py`,
@@ -84,7 +85,9 @@ short-horizon, small-action regime?
 - **GRPO code done 2026-11-22:** `algos/grpo.py`, `configs/experiments/grpo.yaml`; 124 tests pass.
 - **Prajna:**
   - Done: `slurm/setup_env.sh`, `fetch_data.sh` and the `g8.sh` array; the user ran the G-8 sweep. Venv `~/mhtable-venv`, data `~/mhtable-data/v4`, runs `~/mhtable-runs`; submit from the repo root, logs in `slurm/logs/`.
-  - Written, not yet run: `setup_reader.sh`, `fetch_models.sh`, `reader_smoke.sh`.
+  - Reader setup: first `reader_smoke` (2026-11-22) failed — the default vLLM wheel is a CUDA 13
+    build; `setup_reader.sh` now installs the cu129 build (see "First batch job" below). Re-run
+    `setup_reader.sh`, then `reader_smoke.sh`.
   - Next gate: BC → PPO on dev with the real reader (PLAN P9).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
@@ -200,16 +203,17 @@ or 2FA codes in the repo.
 **First batch job (2026-11-21, `sbatch` on `a40`, node cn25-a40) — works with
 `--partition=a40 --qos=a40 --account=cs769_02`:**
 - **GPU driver 570.86.15, CUDA 12.8** (A40 = Ampere, bf16 supported). molab ran vLLM 0.34 with
-  torch built for CUDA 13; on Prajna torch/vLLM must be **CUDA 12.8 (cu128) builds** — a cu13
-  wheel will not run on this driver. Pin the cu128 torch index when installing.
+  torch built for CUDA 13; on Prajna torch/vLLM must be **CUDA 12.x builds** — a cu13 wheel will
+  not run on this driver. vLLM's default PyPI wheel is cu13: it imports on the login node but fails
+  on a GPU node with `libcudart.so.13: cannot open shared object file` (reader_smoke 2026-11-22,
+  with vllm 0.24.0 + torch 2.11.0+cu128). vLLM 0.24.0 publishes only cu129 and cu130 builds, so
+  `setup_reader.sh` installs `vllm==0.24.0+cu129` from `https://wheels.vllm.ai/0.24.0/cu129` with
+  torch cu129 (a 12.9 runtime on the 12.8 driver relies on CUDA minor-version compatibility).
 - `/scratch` on the compute node is the same `slurm:/scratch` (250 GB, same usage as on the login
   node), so it is shared between login and compute nodes — but small; prefer `/home` (no quota).
-- **Internet on compute nodes: probably none.** Both `curl` lines printed nothing (the script's
-  `|| echo` fallback was attached to `head`, so a failed `curl` stays silent). Plan for offline
-  jobs: install packages and download data + models on the login node into `/home`, run jobs
-  with `HF_HUB_OFFLINE=1`. To confirm explicitly:
-  `curl -s -o /dev/null -w "%{http_code}\n" --max-time 15 https://huggingface.co || echo FAILED`
-  inside a batch job.
+- **Internet on compute nodes: none (confirmed 2026-11-22**, reader_smoke on cn41-l40: curl to
+  huggingface.co gave `000` / `FAILED`). Install packages and download data + models on the login
+  node into `/home`; jobs run with `HF_HUB_OFFLINE=1`.
 
 ## Rules for agents
 

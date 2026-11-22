@@ -9,7 +9,10 @@ _base_: ../base.yaml
 algo:
   name: grpo
   group_size: 8             # rollouts per question (G)
-  std_normalize: true       # false = divide by nothing (Dr. GRPO)
+  std_normalize: false      # mean-only centring (Dr. GRPO). true = standard GRPO's division by the
+                            # group std; it inflated tiny token-cost gaps between failed rollouts
+                            # into full-size advantages and taught the policy to stop early
+                            # (20-question check 2026-11-22: 30% with std vs 75% without; PLAN P9)
   lr_actor: 3.0e-4
   clip: 0.2
   epochs: 4

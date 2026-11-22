@@ -495,7 +495,9 @@ KL ≈ 2.6, because Adam steps each of the 2.3M parameters by about lr whatever 
 `compute_advantages`: trajectories come in consecutive blocks of `group_size` (= G, default 8)
 rollouts of one question from one start (as `collect` returns them; a question sampled twice is
 two groups); each trajectory's total return R_i becomes A_i = (R_i − mean) / (std + ε) of its
-group (`std_normalize: false` = mean-only, "Dr. GRPO"), the same A_i for every one of its steps;
+group (`std_normalize: false` = mean-only, "Dr. GRPO" — the default in grpo.yaml, see PLAN P9),
+the same A_i for every one of its steps. Because shaping telescopes over an episode, outcome
+GRPO's advantage ignores it (R1 ≡ R0 up to the curriculum start);
 a group with identical returns gets A = 0 and counts towards `zero_adv_frac`. `update`: PPO's
 clipped surrogate, entropy and KL to BC, with `value_coef = 0` and an actor-only optimiser (the
 value head never changes). `configs/experiments/grpo.yaml` uses 16 questions × 8 rollouts = 128

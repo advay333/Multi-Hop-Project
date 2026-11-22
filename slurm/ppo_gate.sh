@@ -22,7 +22,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm/logs/ppo_gate_%A_%a.out
 #SBATCH --error=slurm/logs/ppo_gate_%A_%a.out
 set -euo pipefail

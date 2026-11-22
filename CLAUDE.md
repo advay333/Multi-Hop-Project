@@ -100,6 +100,9 @@ short-horizon, small-action regime?
     `configs/experiments/ppo_real.yaml`); both have `SMOKE=1`; not yet run. Gate = the in-run
     dev curve (final EM vs iteration 0 = BC), not the policy.pt re-score (that checkpoint
     includes iteration 0, so it cannot fall below BC). PLAN P9.
+  - Smoke tests of `bc_bge.sh` and `ppo_gate.sh` passed 2026-11-22 (reader in the RL loop works;
+    ~2–5 h per full RL run, estimated). Grid + test scripts written, not run: `slurm/p9_grid.sh`
+    (array 0-7, needs `LR=`; `configs/experiments/grpo_real.yaml`), `slurm/baselines_test.sh`.
   - **P9 grid seeds (user decision 2026-11-22): seed 0 only for now** (8 cells, 2 of them = the
     gate's PPO-R1 runs); a second seed later if time permits. Single-seed caveat goes in the report.
   - Next gate: BC → PPO on dev with the real reader (PLAN P9).

@@ -462,7 +462,15 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   - The two PPO-R1 gate runs at the chosen actor lr count as cells, so 6 new runs.
   - Estimated ≈ 10–15 h wall time on l40 + a40 (≈ 7 running at once), to be re-estimated from the smoke timing.
   - The report must say that PPO-vs-GRPO conclusions rest on a single seed. The question-level paired bootstrap covers question sampling, not seed noise.
-- Remaining before the grid: run the gate, then the P9 array script (GRPO with the real reader, plus the R0 cells).
+- **Smoke tests passed 2026-11-22** (`bc_bge.sh` and `ppo_gate.sh` with `SMOKE=1`, L40S): data, embedding cache and reader all load offline, and the real reader runs inside the RL loop.
+  - PPO's iteration-0 evaluation equals `evaluate.py`'s BC score exactly (EM 0.02, 353.98 tokens), so the in-run curve and the evaluator agree.
+  - Timing: ~2 s per 16-episode iteration once warm, so a full PPO run is about 2–5 h (pending the full runs). `ppo_gate.sh` limit cut to 12 h.
+- **Grid and test scripts written 2026-11-22, not yet run.**
+  - `configs/experiments/grpo_real.yaml` (= `grpo.yaml` + `eval.yaml`; sets `algo.name: grpo` explicitly, because `eval.yaml` re-applies `base.yaml`).
+  - `slurm/p9_grid.sh` (array 0–7 = {ppo, grpo} × {R1, R0} × {strict, relaxed}, seed 0). One actor lr for all arms (`LR=`, chosen at the gate). Tasks 0–1 are the gate runs: not retrained, only scored.
+  - Every task scores its best-dev checkpoint on the **test** split (`t-<run>-test`).
+  - `slurm/baselines_test.sh` (one job): oracle, B1 truncate, B2 random_rows, heuristic and BC on test with the same vLLM.
+- Remaining: run the full gate, choose the lr, run the grid and the test baselines, then the P9 table and plots.
 - GRPO (G = 8 rollouts per question, group-normalised return, KL to BC); log the zero-advantage fraction.
 - 2×2 grid {PPO, GRPO} × {R0, R1}, curves plotted against **reader calls**, not gradient steps.
 - **Gate:** the 2×2 table on dev; then test numbers with 3 seeds once the setup is frozen.

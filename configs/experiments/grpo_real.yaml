@@ -1,0 +1,9 @@
+# GRPO with the real reader (PLAN.md P9 grid): grpo.yaml's algorithm and loop, plus eval.yaml's
+# reader, bge-m3 embedding cache and reader tokenizer (see ppo_real.yaml).
+#   python -m mhtable.train --config configs/experiments/grpo_real.yaml --data-dir <data repo copy> \
+#       train.init=<bc run>/policy.pt env.tier=strict reward.variant=R1
+# On Prajna: slurm/p9_grid.sh.
+_base_: [grpo.yaml, eval.yaml]
+
+algo:
+  name: grpo   # needed: eval.yaml re-applies base.yaml, whose algo.name (ppo) would win otherwise

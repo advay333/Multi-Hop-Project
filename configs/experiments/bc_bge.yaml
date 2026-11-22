@@ -7,7 +7,7 @@
 _base_: bc.yaml
 
 data:
-  revision: data-v3
+  revision: data-v4
 
 encoder:
   name: st

@@ -24,3 +24,6 @@ Thumbs.db
 
 # Local training runs (checkpoints, metrics); kept results go to HuggingFace mhtable-runs
 runs/
+
+# SLURM job logs (Prajna)
+slurm/logs/

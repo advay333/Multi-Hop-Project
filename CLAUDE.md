@@ -21,25 +21,27 @@ short-horizon, small-action regime?
 ## Status (2026-11-17)
 
 - **P0 repo + storage — done.** **P1 data — done** (`data-v1`). **P2 oracle — done.**
-  **P3 environment — done.** Current data: **`data-v3`** (tagged 2026-11-17 on mhtable-data; data +
-  index together; use `data.revision: data-v3`).
+  **P3 environment — done.** Current data: **`data-v4`** (tagged 2026-11-21 on mhtable-data;
+  = data-v3 of 2026-11-17 + SQLite indexes in the large BIRD DBs; use `data.revision: data-v4`).
 - **data-v3 pool** (oracle-verified, strict / relaxed): train Spider 1,707 / 1,944, MMQA 942 /
   1,219, BIRD 3,038 / 4,679; dev 394 / 458; test 1,172 / 1,361 (Spider+MMQA only); bird_dev
   643 / 832 (transfer set). G-6 reachability: Spider+MMQA train 91.0% / 86.2% (pass), BIRD train
   87.4% / 79.5%. Fully reachable ≈ 5,060 strict / 6,450 relaxed (DATASET_CARD "data-v3").
 - **User decisions 2026-11-17:** accept the BIRD oracle pass rate (~93%, gate 95%) and BIRD
   relaxed reachability 79.5% (gate 85%). Spider+MMQA passes every gate.
-- **Open (PLAN §4a): BIRD real-SQL check did not finish** — look-ahead COUNTs on the largest
+- **Closed by data-v4 (was open, PLAN §4a): BIRD real-SQL check did not finish** — look-ahead COUNTs on the largest
   BIRD DBs (`movie_platform`, `talkingdata`) are far too slow (90+ min for part of one tier), so
   crash-freedom on real BIRD DBs is unverified and RL on BIRD will be slow until fixed (SQLite
   indexes on join/anchor columns → `data-v4`, a row-count cap, or excluding the largest DBs).
   Train on Spider+MMQA first. The data-v3 per-tier oracle `fail_reasons` were not seen (molab
   session lost); `stats/bird.json` on HF has them if the build pushed `stats/`.
-- **Track B code — done 2026-11-21** (118 tests; PLAN §4a): `env/sqlindex.py` (SQLite indexes
-  on join/filter columns of large tables -> `data-v4`), look-ahead memo + bounded `materialise`
-  in `env/env.py`, `analysis/speed.py`, `coverage.py --per-db`, `storage download|push-large|tag`
-  CLI. **molab run pending:** `notebooks/track_b.py` (CPU, ~50 GB disk; push/tag are separate
-  buttons). After data-v4: BIRD configs use `data.revision: data-v4`; Spider+MMQA can stay on v3.
+- **Track B — done 2026-11-21** (PLAN §4a; `notebooks/track_b.py`): **`data-v4`** = data-v3 +
+  SQLite indexes + ANALYZE in 41 of 80 BIRD DBs (`env/sqlindex.py`); look-ahead memo + bounded
+  `materialise` in `env/env.py`, `analysis/speed.py`, `coverage.py --per-db`,
+  `storage download|push-large|tag` CLI (`push_large` works on huggingface_hub 2.x). BIRD real-SQL
+  check: 0 crashes, reachability = offline G-6, look-ahead timeouts < 1% overall
+  (language_corpus ~14%, accepted). **Use `data.revision: data-v4` everywhere** (Spider/MMQA
+  files identical to v3). The BIRD "Open" item above is closed.
 - **Compute:** Prajna access works since 2026-11-21 (account `cs769_02`; partitions and limits in
   the Prajna section below) and becomes the main compute once the `slurm/` scripts exist and
   internet access on compute nodes is confirmed; molab remains the fallback.

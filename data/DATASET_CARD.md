@@ -260,8 +260,27 @@ G-6 (`analysis.reach`, data-v3 main; questions / reachable):
 Fully reachable (usable for BC as-is): Spider+MMQA 2,410 / 2,727 + BIRD 2,654 / 3,720 =
 **5,064 strict / 6,447 relaxed**. Per-tier oracle pass rates for data-v3 were not recorded (the
 molab session was lost before they were saved; `stats/<family>.json` on HF has them if pushed).
-The BIRD real-SQL environment check (`analysis.coverage`) did not finish: look-ahead COUNTs on
-the largest BIRD databases (`movie_platform`, `talkingdata`) are too slow — see PLAN §4a.
+The BIRD real-SQL environment check (`analysis.coverage`) did not finish on data-v3: look-ahead
+COUNTs on the largest BIRD databases (`movie_platform`, `talkingdata`) were too slow — fixed in
+data-v4 (below).
+
+**data-v4 (tagged 2026-11-21, molab `notebooks/track_b.py`)** = data-v3 + SQLite indexes and
+planner statistics (ANALYZE) in 41 of the 80 BIRD databases (those with a table of >= 50k rows;
+`env.sqlindex`: join columns of candidate edges and filter-able columns). Questions, gold,
+splits, env index and all Spider/MMQA files are unchanged; query results are unchanged (only
+speed, and the scan order of unordered reads). BIRD DBs 31.6 -> 35.9 GiB; manifest
+`stats/db_index_bird.json`. Environment check with real SQL, 15 questions per DB:
+
+| Split | Questions strict / relaxed | Reachability strict / relaxed | Random-policy crashes | Look-ahead timeouts (random episodes) |
+|---|---|---|---|---|
+| BIRD train | 754 / 967 | 87.3% / 79.8% | 0 / 0 | 0.9% / 0.6% |
+| bird_dev | 163 / 165 | 78.5% / 73.9% | 0 / 0 | 0.06% / 0.02% |
+
+Six largest DBs (random episodes, 120 s each): look-ahead timeouts data-v3 -> data-v4
+movie_platform 24.9% -> 1.8%, talkingdata (never finished) -> 0.9%, donor 8.5% -> 1.3%,
+codebase_comments 14.3% -> 1.9%, bike_share_1 0.6% -> 0.5%, language_corpus 10.4% -> 13.9%
+(its slow queries join every row of `words` through an inferred edge that rarely matches; a
+timeout is reported as -1 = unknown size).
 
 **Local data-v3 dry run (Spider+MMQA, 2026-11-16, not pushed):** full build + new index +
 `analysis.coverage` (real execution, look-ahead, 1,000 random episodes per tier).

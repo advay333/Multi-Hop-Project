@@ -10,7 +10,19 @@ PPO-Clip, the main arm (PLAN.md P8, report E.3 and Table 4).
                 KL      keeps the policy near the behaviour-cloning start (only when a BC
                         policy is given)
 
-The entropy coefficient is annealed linearly by `set_progress(fraction of training done)`.
+The entropy coefficient is annealed linearly by `set_progress(fraction of training done)`
+(set entropy_coef_final = entropy_coef for a constant bonus).
+
+Stability options (Track A, gate G-8 — entropy collapsed because updates moved the policy too far):
+    target_kl            stop the epoch loop of an update once a minibatch's approximate KL to
+                         the rollout policy exceeds 1.5 x target_kl (as in Stable-Baselines3);
+                         None = always run all epochs (the original behaviour)
+    freeze_temperature   keep the policy's softmax temperature fixed: one learnable scalar can
+                         otherwise sharpen every decision at once and kill exploration
+    adam_eps             Adam's epsilon. Adam's step is ~lr per parameter whatever the gradient's size, so
+                         near a converged policy (tiny gradients) the default 1e-8 still takes full steps;
+                         a larger eps makes small gradients give small steps. Measured on the 20-question
+                         overfit set (PLAN P8): one update at lr 3e-4 moved a converged policy by KL 2.6.
 Actor and critic have separate learning rates; they share no weights (policies/mlp.py).
 """
 
@@ -31,7 +43,8 @@ class PPO(Algorithm):
                  value_clip: float = 0.2, epochs: int = 4, batch_size: int = 256, gamma: float = 1.0,
                  lam: float = 0.95, entropy_coef: float = 0.01, entropy_coef_final: float = 0.001,
                  value_coef: float = 0.5, kl_bc_coef: float = 0.02, grad_clip: float = 0.5,
-                 normalize_adv: bool = True, seed: int = 0):
+                 normalize_adv: bool = True, target_kl: float | None = None, freeze_temperature: bool = False,
+                 adam_eps: float = 1e-8, seed: int = 0):
         super().__init__(policy)
         self.bc_policy = bc_policy
         if bc_policy is not None:
@@ -43,8 +56,14 @@ class PPO(Algorithm):
         self.kl_bc_coef = kl_bc_coef if bc_policy is not None else 0.0
         self.entropy_start, self.entropy_final, self.entropy_coef = entropy_coef, entropy_coef_final, entropy_coef
         self.normalize_adv = normalize_adv
-        self.opt = torch.optim.Adam([{"params": list(policy.actor_parameters()), "lr": lr_actor},
-                                     {"params": list(policy.critic_parameters()), "lr": lr_critic}])
+        self.target_kl = target_kl
+        actor = list(policy.actor_parameters())
+        temp = getattr(policy, "log_temperature", None)
+        if freeze_temperature and temp is not None:
+            temp.requires_grad_(False)
+            actor = [p for p in actor if p is not temp]
+        self.opt = torch.optim.Adam([{"params": actor, "lr": lr_actor},
+                                     {"params": list(policy.critic_parameters()), "lr": lr_critic}], eps=adam_eps)
         self.generator = torch.Generator().manual_seed(seed)
 
     def set_progress(self, frac: float) -> None:
@@ -73,15 +92,25 @@ class PPO(Algorithm):
         if self.kl_bc_coef > 0:
             with torch.no_grad():
                 bc_logp = torch.log_softmax(self.bc_policy(batch.state, batch.actions, batch.mask)[0], dim=-1)
-        stats = {}
+        stats, stopped, epochs_run = {}, False, 0
         for _ in range(self.epochs):
+            if stopped:
+                break
+            epochs_run += 1
             perm = torch.randperm(len(batch), generator=self.generator).to(dev)
             sums = {k: 0.0 for k in ("policy_loss", "value_loss", "entropy", "kl_bc", "approx_kl", "clip_frac")}
+            seen_n = 0
             for k in range(0, len(batch), self.batch_size):
                 idx = perm[k:k + self.batch_size]
                 b = batch.select(idx)
                 logp, entropy, value, logp_all = evaluate_actions(self.policy, b)
                 ratio = (logp - b.logp).exp()
+                if self.target_kl is not None:
+                    with torch.no_grad():
+                        kl_now = ((ratio - 1) - (logp - b.logp)).mean().item()  # low-variance KL estimate
+                    if kl_now > 1.5 * self.target_kl:
+                        stopped = True
+                        break
                 a = adv[idx]
                 policy_loss = -torch.min(ratio * a, ratio.clamp(1 - self.clip, 1 + self.clip) * a).mean()
                 v_clipped = b.value + (value - b.value).clamp(-self.value_clip, self.value_clip)
@@ -97,14 +126,18 @@ class PPO(Algorithm):
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
                 self.opt.step()
                 n = len(idx)
+                seen_n += n
                 sums["policy_loss"] += policy_loss.item() * n
                 sums["value_loss"] += value_loss.item() * n
                 sums["entropy"] += entropy.mean().item() * n
                 sums["kl_bc"] += kl_bc.item() * n
                 sums["approx_kl"] += (b.logp - logp).mean().item() * n
                 sums["clip_frac"] += ((ratio - 1).abs() > self.clip).float().mean().item() * n
-            stats = {k: v / len(batch) for k, v in sums.items()}  # the last epoch's averages
+            if seen_n:  # this epoch's averages (a stopped epoch: over the minibatches it ran)
+                stats = {k: v / seen_n for k, v in sums.items()}
         var = batch.returns.var() if len(batch) > 1 else torch.zeros((), device=dev)
         stats["explained_variance"] = float(1 - (batch.returns - batch.value).var() / var) if var > 1e-12 else 0.0
         stats["entropy_coef"] = self.entropy_coef
+        stats["epochs_run"] = epochs_run
+        stats["temperature"] = float(self.policy.log_temperature.detach().exp()) if hasattr(self.policy, "log_temperature") else 1.0
         return stats

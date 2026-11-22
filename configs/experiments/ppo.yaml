@@ -20,6 +20,9 @@ algo:
   value_coef: 0.5
   kl_bc_coef: 0.02          # KL to the BC policy; ignored when train.init is null
   grad_clip: 0.5
+  target_kl: null           # e.g. 0.02: stop an update's epochs once approx. KL > 1.5 x this (Track A)
+  freeze_temperature: false # true: the policy's softmax temperature is not learned (Track A)
+  adam_eps: 1.0e-8          # Adam epsilon; larger = small gradients give small steps (Track A)
 
 train:
   init: null                # path to a BC checkpoint (policy.pt); null = random start

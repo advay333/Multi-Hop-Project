@@ -451,7 +451,10 @@ eligibility filter, `col LIKE 'text'` -> `=`, and the revised action set / index
   timeouts, 0.33 s mean): its slow queries join every row of `words` (millions) through an
   inferred edge that rarely matches, so the LIMIT never triggers; the -1 (unknown) flag covers
   those states. Accepted; revisit only if BIRD RL is slow there. Step-5 numbers above unchanged
-  (ANALYZE changes speed only). Next: push + tag **data-v4**.
+  (ANALYZE changes speed only).
+- **data-v4 tagged 2026-11-21** (verified on HF: 41 DB files with new hashes + manifest
+  `stats/db_index_bird.json`, 80 BIRD DB files, data-v4 = main). **Track B done.**
+  `eval.yaml` / `bc_bge.yaml` now pin data-v4 (Spider/MMQA files identical to data-v3).
 - **BIRD relaxed coverage**, if it must reach 85% later: remaining blockers are values outside the
   10k cell index, non-inferred joins, join/numeric ranking, rare LIKE shapes; candidates are
   embedding similarity (P4) and a runtime exact-value probe.

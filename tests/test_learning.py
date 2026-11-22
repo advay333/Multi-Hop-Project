@@ -405,6 +405,21 @@ def test_ppo_advantages_and_update(setup):
     assert PPO(policy).kl_bc_coef == 0.0  # no BC policy -> no KL term
 
 
+def test_ppo_target_kl_stops_early_and_temperature_can_be_frozen(setup):
+    from mhtable.algos.ppo import PPO
+
+    env, feat, policy, golds = setup
+    g = torch.Generator().manual_seed(0)
+    trajs = collect(env, PolicyActor(policy, feat), MockReader(), [_inst()] * 16, mode="sample",
+                    oracle_mode="reward", golds=golds, generator=g)
+    t0 = float(policy.log_temperature)
+    ppo = PPO(policy, lr_actor=0.05, batch_size=4, epochs=20, target_kl=1e-6, freeze_temperature=True)
+    stats = ppo.update(ppo.compute_advantages(trajs))
+    assert stats["epochs_run"] < 20  # a big learning rate trips the KL stop
+    assert float(policy.log_temperature) == t0 and not policy.log_temperature.requires_grad
+    assert all(np.isfinite(v) for v in stats.values())
+
+
 def test_candidates_are_shared_inside_a_group(setup):
     env, feat, policy, golds = setup
     calls = []

@@ -5,7 +5,7 @@
 _base_: ../base.yaml
 
 data:
-  revision: data-v3
+  revision: data-v4
 
 env:
   tokenizer: reader         # count the 4,096-token budget with the reader's own tokenizer

@@ -485,7 +485,21 @@ V(s), V(terminal) = 0. `update`: K epochs of minibatches on clipped ratio + clip
 − entropy + KL(π ‖ π_BC) against a frozen copy of the BC policy (term dropped when there is no
 BC start); separate actor/critic learning rates; advantages normalised per batch; entropy
 coefficient annealed by `set_progress`. Stats: policy/value loss, entropy, KL to BC, approximate
-KL to the previous policy, clip fraction, explained variance of the critic.
+KL to the previous policy, clip fraction, explained variance of the critic. Stability options
+(Track A, all off by default): `target_kl` (stop an update's epochs once a minibatch's approximate
+KL exceeds 1.5× the target), `freeze_temperature` (the softmax temperature is not learned),
+`adam_eps`. Measured (PLAN P8): one Adam step at actor lr 3e-4 moves a converged policy by
+KL ≈ 2.6, because Adam steps each of the 2.3M parameters by about lr whatever the gradient's size.
+
+**`algos/grpo.py`** (built 2026-11-22, P9) — a subclass of PPO with no critic.
+`compute_advantages`: trajectories come in consecutive blocks of `group_size` (= G, default 8)
+rollouts of one question from one start (as `collect` returns them; a question sampled twice is
+two groups); each trajectory's total return R_i becomes A_i = (R_i − mean) / (std + ε) of its
+group (`std_normalize: false` = mean-only, "Dr. GRPO"), the same A_i for every one of its steps;
+a group with identical returns gets A = 0 and counts towards `zero_adv_frac`. `update`: PPO's
+clipped surrogate, entropy and KL to BC, with `value_coef = 0` and an actor-only optimiser (the
+value head never changes). `configs/experiments/grpo.yaml` uses 16 questions × 8 rollouts = 128
+episodes per iteration, PPO's 128 × 1, so both arms spend the same reader calls per iteration.
 
 **RL loop** (`train.run_rl`, built in P8; report Algorithm 1) — per iteration: sample
 `questions_per_iter` training questions (a smaller pool is repeated to fill the batch); with

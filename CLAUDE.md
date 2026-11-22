@@ -77,6 +77,15 @@ short-horizon, small-action regime?
   `eval.yaml`. **GPU run pending:** `notebooks/track_c.py` (BC with bge-m3, full-dev evaluation
   of oracle / B1 / B2 / heuristic / BC). Dry run: whole tables show the answer 93% of the time at
   ~700 tokens (dev DBs are small), so B1 may be a strong baseline (PLAN P6).
+- **Track A / G-8 — closed 2026-11-22 (user accepted):**
+  - From-scratch PPO plateaus at about 85% of the 20-question ceiling (laptop and Prajna sweeps, PLAN P8).
+  - Cause: Adam steps at actor lr 3e-4 are about 100× too large for the 2.3M-parameter policy (one step moves a converged policy by KL 2.6).
+  - New PPO options: `target_kl`, `freeze_temperature`, `adam_eps`.
+- **GRPO code done 2026-11-22:** `algos/grpo.py`, `configs/experiments/grpo.yaml`; 124 tests pass.
+- **Prajna:**
+  - Done: `slurm/setup_env.sh`, `fetch_data.sh` and the `g8.sh` array; the user ran the G-8 sweep. Venv `~/mhtable-venv`, data `~/mhtable-data/v4`, runs `~/mhtable-runs`; submit from the repo root, logs in `slurm/logs/`.
+  - Written, not yet run: `setup_reader.sh`, `fetch_models.sh`, `reader_smoke.sh`.
+  - Next gate: BC → PPO on dev with the real reader (PLAN P9).
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the

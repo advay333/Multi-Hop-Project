@@ -34,6 +34,7 @@ import numpy as np
 import torch
 
 import mhtable.algos.bc  # noqa: F401  (registers "bc")
+import mhtable.algos.grpo  # noqa: F401  (registers "grpo")
 import mhtable.algos.ppo  # noqa: F401  (registers "ppo")
 import mhtable.encoders  # noqa: F401  (registers encoders)
 import mhtable.policies  # noqa: F401  (registers policies)

@@ -1,0 +1,34 @@
+# GRPO, the critic-free arm (PLAN.md P9). Same rollout, reward and policy as ppo.yaml; the
+# baseline is the group's mean return instead of a learned critic.
+#   python -m mhtable.train --config configs/experiments/grpo.yaml --data-dir <data repo copy> \
+#       train.init=runs/<bc run>/policy.pt reward.variant=R1
+# Episodes per iteration = questions_per_iter x group_size = 16 x 8 = 128, the same as PPO's
+# 128 x 1, so the two arms spend the same reader calls per iteration.
+_base_: ../base.yaml
+
+algo:
+  name: grpo
+  group_size: 8             # rollouts per question (G)
+  std_normalize: true       # false = divide by nothing (Dr. GRPO)
+  lr_actor: 3.0e-4
+  clip: 0.2
+  epochs: 4
+  batch_size: 256
+  entropy_coef: 0.01        # annealed linearly to entropy_coef_final
+  entropy_coef_final: 0.001
+  kl_bc_coef: 0.02          # KL to the BC policy; ignored when train.init is null
+  grad_clip: 0.5
+  target_kl: null
+  freeze_temperature: false
+  adam_eps: 1.0e-8
+
+train:
+  init: null
+  iterations: 300
+  questions_per_iter: 16
+  eval_every: 25
+  eval_on: dev
+  curriculum_start: 0.5
+  curriculum_iters: 100
+  questions: null
+  reachable_only: false

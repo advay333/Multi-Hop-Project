@@ -420,6 +420,70 @@ def test_ppo_target_kl_stops_early_and_temperature_can_be_frozen(setup):
     assert all(np.isfinite(v) for v in stats.values())
 
 
+# ---------------------------------------------------------------- P9: GRPO
+def test_grpo_group_advantages_and_update(setup):
+    import copy
+
+    from mhtable.algos.grpo import GRPO
+
+    env, feat, policy, golds = setup
+    g = torch.Generator().manual_seed(0)
+    trajs = collect(env, PolicyActor(policy, feat), MockReader(), [_inst()] * 2, mode="sample",
+                    oracle_mode="reward", golds=golds, group_size=4, generator=g)
+    algo = GRPO(policy, bc_policy=copy.deepcopy(policy), group_size=4, batch_size=32, epochs=2)
+    assert algo.group_size == 4
+    critic = {id(p) for p in policy.critic_parameters()}
+    assert not any(id(p) in critic for grp in algo.opt.param_groups for p in grp["params"])  # no critic
+    batch = algo.compute_advantages(trajs)
+    for k in (0, 4):  # each block of 4 is one group: advantages are its normalised returns
+        rets = np.array([sum(s.reward for s in tr.steps) for tr in trajs[k:k + 4]])
+        want = np.zeros(4) if rets.std() < 1e-6 else (rets - rets.mean()) / (rets.std() + 1e-6)
+        start = sum(len(tr.steps) for tr in trajs[:k])
+        got = [float(batch.advantage[start + sum(len(t.steps) for t in trajs[k:k + i])]) for i in range(4)]
+        assert got == pytest.approx(want.tolist(), abs=1e-5)
+    critic_before = [p.clone() for p in policy.critic_parameters()]
+    stats = algo.update(batch)
+    assert "value_loss" not in stats and 0.0 <= stats["zero_adv_frac"] <= 1.0
+    assert all(np.isfinite(v) for v in stats.values())
+    assert all(torch.equal(a, b) for a, b in zip(critic_before, policy.critic_parameters()))
+
+
+def test_grpo_identical_returns_give_zero_advantage(setup):
+    from mhtable.algos.grpo import GRPO
+
+    env, feat, policy, golds = setup
+    trajs = collect(env, PolicyActor(policy, feat), MockReader(), [_inst()], mode="argmax",
+                    oracle_mode="reward", golds=golds, group_size=4)  # greedy: 4 identical episodes
+    algo = GRPO(policy, group_size=4)
+    batch = algo.compute_advantages(trajs)
+    assert torch.count_nonzero(batch.advantage) == 0 and algo._group_stats["zero_adv_frac"] == 1.0
+    with pytest.raises(ValueError):
+        algo.compute_advantages(trajs[:3])  # not a whole group
+    with pytest.raises(ValueError):
+        GRPO(policy, group_size=1)
+
+
+def test_train_entry_point_grpo_overfits_one_question(tmp_path, data_dir, gold):  # noqa: F811
+    """G-8 in miniature for GRPO: random start, mock reader, groups of 8."""
+    import json
+
+    from mhtable import train
+
+    _write_repo(data_dir, gold)
+    cfg = Path(__file__).parents[1] / "configs" / "experiments" / "grpo.yaml"
+    args = ["--config", str(cfg), "--data-dir", str(data_dir), "--out", str(tmp_path / "runs"), "--run-id", "g",
+            "data.sources=[spider]", "policy.d=32", "policy.hidden=64", "encoder.dim=32", "algo.lr_actor=0.003",
+            "algo.batch_size=64", "train.questions_per_iter=4", "train.eval_every=20", "train.eval_on=train",
+            "train.curriculum_iters=0", "reward.variant=R1", "train.iterations=40"]
+    assert train.main(args) == 0
+    run = tmp_path / "runs" / "g"
+    result = json.loads((run / "result.json").read_text())
+    assert result["episodes_per_iteration"] == 32 and result["algo"] == "grpo"
+    assert result["train_pool_greedy"]["em"] == 1.0
+    rows = [json.loads(x) for x in (run / "train.jsonl").read_text().splitlines()]
+    assert len(rows) == 40 and "zero_adv_frac" in rows[0]
+
+
 def test_candidates_are_shared_inside_a_group(setup):
     env, feat, policy, golds = setup
     calls = []

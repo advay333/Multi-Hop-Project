@@ -349,7 +349,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 - Cross-entropy on canonical oracle trajectories; this is also the RL initialisation.
 - **Gate:** BC beats the heuristic on dev join-path accuracy (mock reader first, then the real reader).
 
-### P8 — PPO (laptop with mock → molab with the real reader) — CODE DONE 2026-11-17; gate G-8 FAILED (read 2026-11-18)
+### P8 — PPO (laptop with mock → molab with the real reader) — CODE DONE 2026-11-17; gate G-8 NOT PASSED (best ≈ 85% of ceiling, 2026-11-22; cause = oversized actor steps, see Track A)
 - **Built:** `algos/ppo.py`, the RL loop `train.run_rl` (curriculum, `--resume`, `train.jsonl` +
   `metrics.jsonl`), `selectors/oracle.py` (gold-path reference), candidate memoisation in
   `rollout.collect` (`cand_cache`), `configs/experiments/ppo.yaml`. 98 tests pass, including PPO
@@ -373,14 +373,54 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   mock reader a sub-table that *contains* the gold rows counts as correct, so PPO gains by keeping
   more rows, and λ_c = 0.1 is too small to stop it. R0 and R1 are indistinguishable (one seed).
   This is a reward-design warning for the real reader, not yet a finding.
-- **To fix G-8 (laptop only, mock reader; see §4b track A):** higher / non-decaying entropy
-  coefficient, fewer PPO epochs or a smaller actor learning rate, an approximate-KL early stop,
-  check the learnable temperature (it can sharpen the softmax on its own); rerun G-8 for R1 and R0.
+- **Track A (2026-11-22): G-8 still not passed; cause found.** New PPO options, all off by default
+  (`algos/ppo.py`, `ppo.yaml`): `target_kl` (early stop), `freeze_temperature`, `adam_eps`.
+  - *Laptop sweep, data-v2, 150 iterations, greedy EM on the 20 (gold path 100%):*
+    | Run | Settings | Greedy EM |
+    |---|---|---|
+    | A | KL stop | 40% |
+    | B | + frozen temperature | 60% (R0: 35%) |
+    | C | + constant entropy 0.03 | 75% (R0: 75%; seed 1: 55%) |
+    | D | C + actor lr 1e-4 | 85% |
+    | E | frozen temperature + constant entropy 0.05, no KL stop | 90% |
+  - *Diagnostics (laptop):*
+    - BC on the same 20 questions fits them in 50 epochs (EM 100%, return = ceiling 0.989), so the network can represent the solution.
+    - Different runs fail on different questions.
+    - **PPO started from that perfect policy collapses it:** EM 100% → 10% in 10 iterations.
+    - Rollout and update log-probs match exactly. But **one Adam step at actor lr 3e-4 moves the policy by KL 2.6** (about 100× a normal PPO step): Adam steps every one of the 2.3M parameters by about lr, whatever the gradient's size.
+    - One full update moves it by KL 0.08 at lr 1e-5, and by KL ≈ 0 at lr 3e-4 with `adam_eps` 1e-4.
+    - The KL stop cannot help: it checks before each minibatch, so the first, oversized step always runs.
+  - *Prajna sweep (`slurm/g8.sh`, data-v4, 200 iterations, CPU only):* gold-path return 0.936. Greedy EM / return:
+
+    | Arm | R1 | R0 |
+    |---|---|---|
+    | base | 80% / 0.79 | — |
+    | E | 80% / 0.79 | 80% / 0.79 |
+    | F (lr 1e-5 + KL stop) | 60% / 0.59 | 75% / 0.74 |
+    | G (`adam_eps` 1e-4) | 70% / 0.69 | 75% / 0.74 |
+    | H (lr 3e-5, `eps` 1e-5) | 60% / 0.59 | — |
+  - *Reading:*
+    - **Small steps are stable but too slow from scratch.** In 200 iterations none of the arms beats the defaults; everything plateaus at about 85% of the ceiling.
+    - The remaining failures are confident wrong choices (gold-action probability ~0.001): PPO's usual exploration limit with sparse rewards, not a bug.
+    - **Open decision for the user:** accept G-8 at about 85% of the ceiling, or keep tuning. Separately, the BC → PPO runs should use a small actor step, because the default step destroys a converged policy.
 - Original task list:
 - PPO-Clip with GAE, value clipping, entropy, KL to BC (report Table 4 defaults).
 - **Gate G-8:** overfits 20 questions to return ≈ 1.0 (mock reader). Then R0 vs R1 runs.
 
 ### P9 — GRPO + the first result
+- **G-8 accepted by the user 2026-11-22** at ≈ 85% of the ceiling (PLAN P8 Track A). Instead, the
+  gate before the grid is **BC → PPO on dev with the real reader**: PPO from the bge-m3 BC
+  checkpoint, actor lr 1e-5 vs 3e-4, must keep or beat BC's dev EM (28.9% / 28.2%) without
+  collapsing. That run also measures reader calls per hour on Prajna, which sizes the grid.
+- **GRPO code done 2026-11-22** (`algos/grpo.py`, `configs/experiments/grpo.yaml`, 3 tests;
+  124 tests pass; DESIGN §6.6).
+- **Prajna reader setup written 2026-11-22, not yet run** (`slurm/setup_reader.sh` vLLM with a CUDA 12.x
+  torch, `slurm/fetch_models.sh` Qwen2.5-7B + bge-m3 + embedding cache, `slurm/reader_smoke.sh`
+  oracle + reader on 100 dev questions per tier, expected EM ≈ 50%). Every P9 run must use the
+  vLLM version that setup installs; baselines that enter the P9 table are re-evaluated on Prajna
+  with that same version (molab ran vLLM 0.34 on CUDA 13).
+- Remaining before the grid: the BC → PPO gate above, the P9 array script, and the tier/seed
+  layout (both tiers × 3 seeds = 24 runs, or both tiers for seed 0 only).
 - GRPO (G = 8 rollouts per question, group-normalised return, KL to BC); log the zero-advantage fraction.
 - 2×2 grid {PPO, GRPO} × {R0, R1}, curves plotted against **reader calls**, not gradient steps.
 - **Gate:** the 2×2 table on dev; then test numbers with 3 seeds once the setup is frozen.

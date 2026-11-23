@@ -536,20 +536,43 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   - The gap to the oracle (28 vs 46) is path selection: path match 36–39% vs 89%.
   - Test noise: one SE ≈ 1.3 pts; paired CIs are about ±1–1.3.
 - Remaining: dev curves against reader calls as a plot; the report text with the single-seed caveat.
-- **Bigger-step follow-up (script written 2026-11-23, not run): `slurm/p9_bigstep.sh`.** Diagnosis from the grid's train.jsonl:
+- **Bigger-step follow-up (`slurm/p9_bigstep.sh`; smoke passed, all 6 submitted 2026-11-23: jobs 410124 l40 0–3, 410125 a40 4–5).** Diagnosis from the grid's train.jsonl:
   - lr 1e-5 drifts only 0.01–0.12 nats of KL from BC in 300 iterations.
   - lr 3e-4 overshoots: about 0.3–0.6 approximate KL per update, about 1.0–1.4 to BC.
   - Policy entropy is about 0.07–0.1 nats, and 56–87% of GRPO groups have zero advantage (8 identical rollouts). So exploration limits learning too, not just the step size.
   - Settings: `big` = lr 1e-4 + `target_kl` 0.02 + `kl_bc_coef` 0.005. `bigx` = big + entropy bonus 0.05 → 0.005.
   - Array of 6, all R1, s0: ppo/grpo big × strict/relaxed (0–3), plus ppo/grpo bigx strict (4–5). Run IDs are `<algo>-r1-<tier>-<big|bigx>-s0`.
   - Caveat: `target_kl` checks before each minibatch, so at lr 1e-4 every update still takes one full first step (estimated 0.1–0.2 KL). "big" is a middle step size, not a KL-controlled one.
-- **From-scratch follow-up (script written 2026-11-23, not run): `slurm/p9_scratch.sh`.** PPO and GRPO from a random policy, no BC, on the full Spider+MMQA train pool, real reader.
+- **From-scratch follow-up (`slurm/p9_scratch.sh`; smoke passed; tasks 0,1,4,5 submitted 2026-11-23 as job 410127 on a40; PPO-R0 tasks 2–3 to submit on l40 once the big-step l40 tasks finish). Smoke checker: `slurm/check_smoke.sh`.** PPO and GRPO from a random policy, no BC, on the full Spider+MMQA train pool, real reader.
   - Rationale: from BC every arm stays within about 2 pts of BC. From scratch the reward is sparse and exploration matters, which is where a critic (PPO) and the shaping (R1) should make a difference.
   - Settings = G-8 arm E: lr 3e-4, frozen temperature, constant entropy 0.05. 1000 iterations × 128 episodes; curriculum annealed over 300 iterations. 24 h limit; resumes from last.pt.
   - Array of 6: PPO R1, PPO R0 and GRPO R1, each × strict/relaxed. GRPO R0 is not run, because it equals R1.
   - Run IDs `<algo>-<r1|r0>-<tier>-scratch-s0`. Expected to land below BC; the comparison of interest is between the arms.
+- **Big-step + from-scratch results (2026-11-23; all on HF except `grpo-r1-relaxed-scratch-s0`, not uploaded).** Test EM, paired Δ vs BC [95% CI], share of test questions with the same sub-table as BC:
+
+  | Run | Strict EM | Δ vs BC | same as BC | Relaxed EM | Δ vs BC | same as BC |
+  |---|---|---|---|---|---|---|
+  | BC | 28.0 | — | — | 26.8 | — | — |
+  | PPO R1 lr1e-5 (grid) | 28.8 | +0.9 [−0.5, +2.2] | 76% | 28.7 | +1.9 [+0.7, +3.2] | 75% |
+  | PPO R1 big | 27.8 | −0.2 | 100% (best = iter 0) | 27.6 | +0.8 [−0.7, +2.3] | 62% |
+  | GRPO R1 big | 28.9 | +0.9 [−0.6, +2.5] | 66% | 26.7 | −0.1 | 68% |
+  | PPO R1 bigx | 28.2 | +0.3 [−1.4, +1.9] | 62% | — | — | — |
+  | GRPO R1 bigx | 28.3 | +0.3 [−1.5, +2.1] | 59% | — | — | — |
+  | PPO R1 scratch | 24.1 | −3.9 [−6.6, −1.3] | 17% | 22.9 | −3.9 [−6.2, −1.6] | 20% |
+  | PPO R0 scratch | 21.6 | −6.4 [−8.9, −4.0] | 16% | 20.1 | −6.8 [−9.2, −4.3] | 16% |
+  | GRPO R1 scratch | 23.9 | −4.1 [−6.8, −1.5] | 12% | — | — | — |
+
+  - **Bigger steps move the policy but don't improve it.** KL to BC reaches 0.4–1.8 (grid: 0.01–0.18) and 32–41% of test sub-tables change, yet EM stays within ±1 of BC. PPO-R1-strict-big never beat BC on dev, so its best checkpoint is iteration 0 (= BC). bigx raises GRPO's useful groups (zero-advantage 31% vs 62–81%) without an EM gain.
+  - **From scratch, RL learns a lot but stays below BC:** dev EM 9–12 → best 27–30 (BC 27–32); test 4–7 pts below BC. The policies find different routes (path match 13–17% vs BC 38%) that still show the answer about as often (57–58% for R1). Dev curves are noisy; PPO-R0 strict ended at 12.9 (best checkpoint 26.7 used).
+  - **Shaping helps from scratch:** PPO R1 − R0 = +2.5 [+0.1, +4.9] strict, +2.9 [+0.7, +5.0] relaxed. The only significant R1 vs R0 effect in the project (from BC they tie).
+  - **Critic still doesn't matter:** PPO R1 vs GRPO R1 from scratch (strict) +0.2 [−2.1, +2.6].
 - Earlier plan: get the results (HF push + laptop archive), then the P9 table (8 grid cells + 4 process-GRPO rows + test baselines) and dev curves against reader calls; check that GRPO-R1 ≈ GRPO-R0 empirically.
-- **Inference demo (requested 2026-11-23; ideated, not coded):** a marimo notebook on molab (`notebooks/demo.py`) in app view.
+- **Inference demo: code done 2026-11-23, not yet run on molab.** `src/mhtable/demo.py` (core, DESIGN §6.6) + `notebooks/demo.py` (marimo UI) + `tests/test_demo.py` (8 tests; 135 pass in total).
+  - Extensible: runs pushed to HF `mhtable-runs/prajna/` appear automatically (big-step and from-scratch runs included).
+  - Swappable reader: a dropdown of presets plus a custom HF model ID, `hf`/`vllm` backend, dtype. The budget tokenizer stays pinned to Qwen2.5-7B, which the policies were trained with.
+  - Not yet checked on real data: the 707 MB embedding cache is too slow to download on the laptop. First molab run = the check.
+  - Still to do: pick the 10–15 replay questions and save their traces.
+- Original demo plan (2026-11-23): a marimo notebook on molab (`notebooks/demo.py`) in app view.
   - Live mode: hf reader (not vLLM, which is a poor fit for one question at a time), bge-m3, policies from HF `mhtable-runs/prajna/<run>/policy.pt`.
   - Replay mode: saved traces of 10–15 chosen questions, so the demo can't fail live.
   - What it shows: per-hop top-5 action probabilities, the action in plain English + SQL, row counts, the final sub-table with tokens vs budget, and the reader's answer vs gold. Then BC / PPO / GRPO / B1 side by side, a strict/relaxed toggle, an optional typed question on a dev DB (inference needs no gold), and a results tab.

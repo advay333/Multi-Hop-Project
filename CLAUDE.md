@@ -120,7 +120,8 @@ short-horizon, small-action regime?
     - All runs are on HF. Test EM vs BC 28.0 / 26.8: every RL arm lands at 27.7–28.8 / 26.8–28.7, i.e. ≤ +1.9 pts.
     - Only relaxed PPO-R1/R0 and GRPO-R0 beat BC significantly (paired bootstrap). Arm-vs-arm differences are noise; GRPO R1 ≈ R0; process GRPO gives no gain.
     - The policies stay 74–89% identical to BC.
-  - **Next:** plots + report text; the molab inference demo (ideated in PLAN P9, not coded); optionally a larger-step RL run.
+  - **Big-step + from-scratch runs done 2026-11-23 (PLAN P9 table; `grpo-r1-relaxed-scratch-s0` not on HF):** bigger steps move policies 0.4–1.8 KL from BC with no EM gain; from scratch reaches best dev 27–30 but test 4–7 pts below BC; shaping R1 beats R0 from scratch (+2.5 / +2.9, significant); PPO ≈ GRPO everywhere.
+  - **Next:** slides (flow agreed 2026-11-23, 9 slides + appendix), plots + report text; the molab inference demo (ideated in PLAN P9, not coded); optionally a larger-step RL run.
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the

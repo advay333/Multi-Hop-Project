@@ -375,7 +375,7 @@ and a test checks the module imports nothing gold-aware.
 class Policy(nn.Module):
     def forward(self, state_feat, action_feats, mask) -> tuple[Tensor, Tensor]  # logits [B,|A|], value [B]
 ```
-`mlp` (default, built in P5; 2.3M parameters at d = 256 with 64-d embeddings): state tower +
+`mlp` (default, built in P5; 2.3M parameters at d = 256 with 64-d embeddings; 3.03M with the 1,024-d bge-m3 embeddings of the real runs: 2.05M actor, 0.99M critic): state tower +
 action tower → d = 256, scaled dot product with learnable temperature; the critic has its own
 state tower. Each tower projects the embedding slots with one shared linear layer + LayerNorm
 and sends the scalars through a separate MLP. Built as `MLPPolicy(featuriser.spec, d, hidden)`.
@@ -544,6 +544,18 @@ by default; writes `predictions_<tier>.jsonl`, `result.json` (suite + slices + r
 calls/hour) and the reader shard; `--reported` refuses the mock reader and the oracle selector.
 `python -m mhtable.storage push <repo> <local> <path in repo>` (notebook uploads).
 
+**`demo.py`** (2026-11-23, the inference demo; UI in `notebooks/demo.py`, which, unlike the other notebooks, has presentation code but no logic).
+- `Demo(cfg).run(spec, instance, gold=None, tier) -> Trace` steps one question through one selector, without batching. Each step records the action in plain English (`describe`), the SQL of the relation after it (`State.relation_sql`), its row count, and, for a policy, the top-k candidates with their probabilities. The `Trace` also holds the materialised sub-table, its tokens and budget, the reader's answer, and only then the gold answer and EM.
+- **Selectors** are `SelectorSpec`s:
+  - `baseline_specs()`: oracle (`uses_gold`, the ceiling), truncate, random_rows, heuristic.
+  - `discover_policies()`: every `policy.pt` under HF `mhtable-runs/prajna/` or a local runs folder; smoke and G-8 runs are skipped. `parse_run_id` labels runs from every P9 script; unknown names still load, labelled with the run ID. So new runs appear without code changes.
+- **Reader swap.** `set_reader(overrides)` merges into `cfg.reader`, or `set_reader(reader=obj)` takes a ready reader. The budget tokenizer stays pinned to the training one (resolved when the Demo is created), because the policies' look-ahead features are measured in those tokens.
+- **Typed questions.** `Demo.typed_instance(base, text)` reuses `base`'s database and has no gold. Embedding-cache misses are then encoded live with bge-m3, loaded on first need.
+- **Replay.** `save_traces` / `load_traces` (JSON).
+- **Results table.** `results_table()` reads every `t-*-test/result.json`.
+- **Firewall.** Gold only selects the oracle's path and scores the answer after the reader has answered. The mock reader (tests only) gets gold metadata as in `rollout.collect`.
+- Tests: `tests/test_demo.py`.
+
 ## 7. End-to-end flows
 
 **Sourcing (once, molab):** download Spider (Google Drive), MMQA mirror (Google Drive), BIRD
@@ -590,7 +602,8 @@ table pushed to the run folder.
 | an RL arm | one file in `algos/` + registry entry + config |
 | a reader | one file in `readers/` (`id` + `read_batch`) |
 | a policy network | one file in `policies/` with the same `forward` |
-| a baseline | one file in `selectors/` |
+| a baseline | one file in `selectors/` (+ a `SelectorSpec` in `demo.baseline_specs` to show it in the demo) |
+| a run in the demo | nothing: push its folder to `mhtable-runs/prajna/`; for a new naming scheme, add a pattern to `demo._RUN_PATTERNS` for a nicer label |
 | a dataset | one loader in `data/loaders/` producing `(Instance, gold_sql)`; build does the rest |
 | an action type | `env/actions.py` + its featurisation; oracle mapping in `canonical_trajectory` |
 

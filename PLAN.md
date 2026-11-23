@@ -509,7 +509,46 @@ Each phase ends with a **gate**: a concrete check that must pass before building
 
   - The test oracle is lower than on dev (46 vs 59 strict), so test questions are harder for the reader.
   - B1 and B2 show the answer 80%+ of the time but score ≤ 13% EM. Whole tables confuse the reader, so the dry-run worry that B1 would be a strong baseline did not come true.
-- Remaining: the grid (`sbatch --export=ALL,LR=1e-5 ...`, tasks 2–7, plus tasks 0–1 for test scoring), then the P9 table and plots.
+- **Grid + process-GRPO runs DONE on Prajna 2026-11-23** (results not yet analysed).
+  - Main grid `p9_grid.sh`, LR = 1e-5, PPO λ = 0.95 kept. User decision 2026-11-23: λ is not lowered for the grid. The value head starts untrained from BC, so a small λ would bootstrap off a random critic; the gate was measured at 0.95; and 0.95 is the standard value. Ran as l40 tasks 2–5 and a40 tasks 0, 1, 6, 7; all COMPLETED.
+  - Tasks 3 and 5 were requeued after a node fault on `cn43-l40` ("launch failed requeued held"). They were resumed from last.pt with `ExcNodeList=cn43-l40`. Their metrics.jsonl may repeat a few iterations: when analysing, keep the last row per iteration.
+  - Process GRPO `p9_process.sh`, R1, strict + relaxed, at λ = 0.5 and λ = 0.95, LR 1e-5. The smoke passed first (moved to a40 while l40 was full).
+  - **Results transfer:** HF `mhtable-runs/prajna/` holds only `bc-bge-{strict,relaxed}-s0` so far. The first upload loop matched its globs in the repo folder and skipped every grid run without an error; the corrected loop (absolute paths under `~/mhtable-runs`) has been given to the user. The laptop copy `runs/prajna/` (gitignored) still holds only the gate-era results; the new archive `p9_full.tgz` (no `*.pt`) is pending.
+- **P9 results (analysed 2026-11-23; all runs on HF `mhtable-runs/prajna/`, local copy of the json files in `runs/hf/`).** Test EM, strict / relaxed (n = 1172 / 1361). The paired difference vs BC on the same questions uses a 95% bootstrap CI:
+
+  | Arm (lr 1e-5, s0) | strict EM | Δ vs BC [95% CI] | relaxed EM | Δ vs BC [95% CI] |
+  |---|---|---|---|---|
+  | BC (start) | 28.0 | – | 26.8 | – |
+  | PPO R1 | **28.8** | +0.9 [−0.4, +2.1] | **28.7** | **+1.9 [+0.6, +3.2]** |
+  | PPO R0 | 27.7 | −0.3 [−1.8, +1.0] | 28.2 | +1.4 [+0.1, +2.8] |
+  | GRPO R1 | 27.9 | −0.1 [−1.0, +0.9] | 27.8 | +1.0 [−0.3, +2.1] |
+  | GRPO R0 | 27.9 | −0.1 [−1.1, +0.9] | 28.1 | +1.2 [+0.1, +2.4] |
+  | process GRPO R1 λ 0.5 | 28.5 | +0.5 [−0.5, +1.5] | 26.8 | +0.0 [−1.0, +1.0] |
+  | process GRPO R1 λ 0.95 | 28.2 | +0.3 [−0.9, +1.4] | 27.7 | +0.9 [−0.2, +2.0] |
+  | oracle (ceiling) | 46.4 | | 44.8 | |
+
+  - **RL fine-tuning from BC adds at most about 1–2 pts.** On strict, no arm differs from BC significantly. On relaxed, PPO-R1 (+1.9), PPO-R0 and GRPO-R0 do, but only just.
+  - Differences *between* arms (≤ 1 pt) are within noise. On one seed, the learned critic shows no clear payoff over GRPO. PPO-R1 is best on both tiers, but not significantly.
+  - **GRPO R1 ≈ R0, as predicted.** Test EM is within 0.3 pts. Not bitwise identical: about 82% of answers are the same, because vLLM batching is non-deterministic (the same BC policy's iteration-0 dev EM varies 32.0–32.5 across runs), so runs drift apart.
+  - PPO R1 vs R0: about +1 pt on both tiers, not significant. That fits the shaping only reaching PPO through λ and the critic.
+  - Process GRPO: no gain; λ 0.5 is no better than 0.95.
+  - **The policies barely move from BC:** 74–89% of test questions get the same action types and tables as BC. lr 1e-5 plus the KL to BC keeps them close. Each run used only about 4–5k distinct reader calls (300 × 128 episodes, mostly cached).
+  - The gap to the oracle (28 vs 46) is path selection: path match 36–39% vs 89%.
+  - Test noise: one SE ≈ 1.3 pts; paired CIs are about ±1–1.3.
+- Remaining: dev curves against reader calls as a plot; the report text with the single-seed caveat.
+- **Bigger-step follow-up (script written 2026-11-23, not run): `slurm/p9_bigstep.sh`.** Diagnosis from the grid's train.jsonl:
+  - lr 1e-5 drifts only 0.01–0.12 nats of KL from BC in 300 iterations.
+  - lr 3e-4 overshoots: about 0.3–0.6 approximate KL per update, about 1.0–1.4 to BC.
+  - Policy entropy is about 0.07–0.1 nats, and 56–87% of GRPO groups have zero advantage (8 identical rollouts). So exploration limits learning too, not just the step size.
+  - Settings: `big` = lr 1e-4 + `target_kl` 0.02 + `kl_bc_coef` 0.005. `bigx` = big + entropy bonus 0.05 → 0.005.
+  - Array of 6, all R1, s0: ppo/grpo big × strict/relaxed (0–3), plus ppo/grpo bigx strict (4–5). Run IDs are `<algo>-r1-<tier>-<big|bigx>-s0`.
+- Earlier plan: get the results (HF push + laptop archive), then the P9 table (8 grid cells + 4 process-GRPO rows + test baselines) and dev curves against reader calls; check that GRPO-R1 ≈ GRPO-R0 empirically.
+- **Inference demo (requested 2026-11-23; ideated, not coded):** a marimo notebook on molab (`notebooks/demo.py`) in app view.
+  - Live mode: hf reader (not vLLM, which is a poor fit for one question at a time), bge-m3, policies from HF `mhtable-runs/prajna/<run>/policy.pt`.
+  - Replay mode: saved traces of 10–15 chosen questions, so the demo can't fail live.
+  - What it shows: per-hop top-5 action probabilities, the action in plain English + SQL, row counts, the final sub-table with tokens vs budget, and the reader's answer vs gold. Then BC / PPO / GRPO / B1 side by side, a strict/relaxed toggle, an optional typed question on a dev DB (inference needs no gold), and a results tab.
+  - No BIRD and no live training. molab's serving stack differs from Prajna's, so a few answers may differ. About a day of work, after the checkpoints are on HF.
+- **Possible later arm:** R2 = shaping without resetting Φ to 0 at the terminal state (a bonus for final closeness to the gold path). Every estimator would see it, but it is no longer policy-invariant. Not in the grid.
 - GRPO (G = 8 rollouts per question, group-normalised return, KL to BC); log the zero-advantage fraction.
 - 2×2 grid {PPO, GRPO} × {R0, R1}, curves plotted against **reader calls**, not gradient steps.
 - **Gate:** the 2×2 table on dev; then test numbers with 3 seeds once the setup is frozen.

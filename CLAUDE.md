@@ -105,7 +105,22 @@ short-horizon, small-action regime?
     (array 0-7, needs `LR=`; `configs/experiments/grpo_real.yaml`), `slurm/baselines_test.sh`.
   - **P9 grid seeds (user decision 2026-11-22): seed 0 only for now** (8 cells, 2 of them = the
     gate's PPO-R1 runs); a second seed later if time permits. Single-seed caveat goes in the report.
-  - Next gate: BC → PPO on dev with the real reader (PLAN P9).
+  - **P9 gate DONE 2026-11-22.** Results:
+    - In-run dev EM, BC start → final: strict lr 1e-5 32.0 → 32.0 (best 34.0); strict 3e-4 32.2 → 32.0, FAIL (crashed to 27, then recovered); relaxed 1e-5 27.5 → 30.3 (best 32.1); relaxed 3e-4 27.7 → 32.3.
+    - Every gain is 1–2 SE (dev SE ≈ 2.3 pts). **Grid LR = 1e-5, PPO λ kept at 0.95** (user decision).
+    - About 1 h per RL run on L40S/A40 (estimate was 2–5 h). A40 works too.
+    - Read a gate with `python -m mhtable.analysis.gate <runs dir>`.
+  - **Test baselines** (`baselines_test.sh`), EM strict / relaxed: oracle 46.4 / 44.8, BC 28.0 / 26.8, heuristic 20.5 / 20.0, B1 truncate 12.5 / 13.0, B2 random 10.6 / 10.9. B1 and B2 show the answer 80%+ of the time but whole tables confuse the reader. The test oracle is lower than dev's (59).
+  - **Grid (`p9_grid.sh`, 8 cells) and process GRPO (`p9_process.sh`, R1 × 2 tiers × λ 0.5 / 0.95) both COMPLETED 2026-11-23; not yet analysed.**
+    - Tasks 3 and 5 were resumed after a node fault on cn43-l40, so keep the last metrics row per iteration.
+    - Results must be fetched: HF `mhtable-runs/prajna/` has only the BC runs (the first upload loop's globs ran in the wrong folder; corrected loop given), and the laptop `runs/prajna/` has only gate-era files.
+    - Prajna paths: home `/home/cs769/cs769_02`, repo `.../Multi-Hop-Project`, runs `.../mhtable-runs`. Windows `scp` needs absolute remote paths (no `~`). Move results with tar (`--exclude='*.pt'`) + scp into `runs/prajna/`; push checkpoints with `python -m mhtable.storage push runs <dir> prajna/<run>`.
+  - **Shaping caveat (2026-11-23):** with Φ(terminal) = 0 and γ = 1, R1 is invisible to outcome GRPO (R1 ≡ R0 exactly) and reaches PPO only through λ = 0.95 truncation and the critic. Process GRPO (`algo.advantage: process`, λ < 1) is the ablation that sees the shaping. 127 tests pass.
+  - **P9 results (2026-11-23, PLAN P9 table):**
+    - All runs are on HF. Test EM vs BC 28.0 / 26.8: every RL arm lands at 27.7–28.8 / 26.8–28.7, i.e. ≤ +1.9 pts.
+    - Only relaxed PPO-R1/R0 and GRPO-R0 beat BC significantly (paired bootstrap). Arm-vs-arm differences are noise; GRPO R1 ≈ R0; process GRPO gives no gain.
+    - The policies stay 74–89% identical to BC.
+  - **Next:** plots + report text; the molab inference demo (ideated in PLAN P9, not coded); optionally a larger-step RL run.
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the

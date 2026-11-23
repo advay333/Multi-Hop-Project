@@ -466,7 +466,7 @@ candidates padded, with `traj` and `group` indices), `collate(trajs)`, `reward_t
 |---|---|---|
 | `bc` | — (targets are gold actions) | cross-entropy |
 | `ppo` | GAE(γ = 1, λ = 0.95) with learned V | clipped ratio, value clipping, entropy, KL to BC |
-| `grpo` | group-normalised return over G rollouts, applied to every step | clipped ratio + KL to BC; logs zero-advantage fraction |
+| `grpo` | group-normalised return over G rollouts, applied to every step (`advantage: outcome`); or per-step λ-return minus the group mean at the same step index (`advantage: process`) | clipped ratio + KL to BC; logs zero-advantage fraction |
 | later: `reinforce`, `ppo_kl`, `vineppo` | batch mean / same as PPO / MC values from K resets | one step / adaptive KL / clipped ratio |
 
 **`dataset.py`** (gold-aware, built in P7) — `load_split(EnvData, split, tier, sources, limit, seed)`
@@ -497,7 +497,8 @@ rollouts of one question from one start (as `collect` returns them; a question s
 two groups); each trajectory's total return R_i becomes A_i = (R_i − mean) / (std + ε) of its
 group (`std_normalize: false` = mean-only, "Dr. GRPO" — the default in grpo.yaml, see PLAN P9),
 the same A_i for every one of its steps. Because shaping telescopes over an episode, outcome
-GRPO's advantage ignores it (R1 ≡ R0 up to the curriculum start);
+GRPO's advantage ignores it: R1 ≡ R0 exactly, because all G rollouts of a group share the start state (even under the curriculum), so the shaping sum −β·Φ(start) is a per-group constant that the mean removes. Corrected 2026-11-23; earlier text said "up to the curriculum start".
+**`advantage: process`** (2026-11-23, P9 ablation; `process_advantages()`): per step, raw_t = Σ_k λ^k r_{t+k}, which is GAE(γ 1, `process_lam`) with V ≡ 0. The baseline is the mean raw value of the group's rollouts still running at step index t, never a function of the rollout's own length. The shaping only matters for λ < 1: at λ = 1 it reduces to −β·Φ(s_t), a state-only term. PPO is limited the same way (γ 1, λ 0.95): its R1 signal comes only from GAE truncation and the critic's bootstrapping. The DeepSeekMath form (sum of pooled-normalised step rewards) was rejected: the shaping still cancels, and the pooled mean adds a per-step length penalty. Config `grpo_process_real.yaml`, script `slurm/p9_process.sh`;
 a group with identical returns gets A = 0 and counts towards `zero_adv_frac`. `update`: PPO's
 clipped surrogate, entropy and KL to BC, with `value_coef = 0` and an actor-only optimiser (the
 value head never changes). `configs/experiments/grpo.yaml` uses 16 questions × 8 rollouts = 128

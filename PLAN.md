@@ -542,6 +542,12 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   - Policy entropy is about 0.07–0.1 nats, and 56–87% of GRPO groups have zero advantage (8 identical rollouts). So exploration limits learning too, not just the step size.
   - Settings: `big` = lr 1e-4 + `target_kl` 0.02 + `kl_bc_coef` 0.005. `bigx` = big + entropy bonus 0.05 → 0.005.
   - Array of 6, all R1, s0: ppo/grpo big × strict/relaxed (0–3), plus ppo/grpo bigx strict (4–5). Run IDs are `<algo>-r1-<tier>-<big|bigx>-s0`.
+  - Caveat: `target_kl` checks before each minibatch, so at lr 1e-4 every update still takes one full first step (estimated 0.1–0.2 KL). "big" is a middle step size, not a KL-controlled one.
+- **From-scratch follow-up (script written 2026-11-23, not run): `slurm/p9_scratch.sh`.** PPO and GRPO from a random policy, no BC, on the full Spider+MMQA train pool, real reader.
+  - Rationale: from BC every arm stays within about 2 pts of BC. From scratch the reward is sparse and exploration matters, which is where a critic (PPO) and the shaping (R1) should make a difference.
+  - Settings = G-8 arm E: lr 3e-4, frozen temperature, constant entropy 0.05. 1000 iterations × 128 episodes; curriculum annealed over 300 iterations. 24 h limit; resumes from last.pt.
+  - Array of 6: PPO R1, PPO R0 and GRPO R1, each × strict/relaxed. GRPO R0 is not run, because it equals R1.
+  - Run IDs `<algo>-<r1|r0>-<tier>-scratch-s0`. Expected to land below BC; the comparison of interest is between the arms.
 - Earlier plan: get the results (HF push + laptop archive), then the P9 table (8 grid cells + 4 process-GRPO rows + test baselines) and dev curves against reader calls; check that GRPO-R1 ≈ GRPO-R0 empirically.
 - **Inference demo (requested 2026-11-23; ideated, not coded):** a marimo notebook on molab (`notebooks/demo.py`) in app view.
   - Live mode: hf reader (not vLLM, which is a poor fit for one question at a time), bge-m3, policies from HF `mhtable-runs/prajna/<run>/policy.pt`.

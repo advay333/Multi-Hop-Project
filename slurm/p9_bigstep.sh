@@ -3,7 +3,9 @@
 # The lr 1e-5 grid barely moved: KL to BC 0.01-0.12 after 300 iterations, 74-89% of test questions
 # solved with BC's actions. lr 3e-4 overshot: approx. KL 0.3-0.6 per update. Policy entropy was
 # ~0.07-0.1 nats, and GRPO had 56-87% zero-advantage groups (all 8 rollouts identical).
-#   big   = lr 1e-4, target_kl 0.02 (each update stops its epochs once approx. KL > 0.03), KL-to-BC 0.005
+#   big   = lr 1e-4, target_kl 0.02, KL-to-BC 0.005. The KL check runs before each minibatch, so the
+#           first minibatch step always happens: at lr 1e-4 one update moves the policy by that one
+#           step (est. ~0.1-0.2 KL, vs ~0.005 at 1e-5 and ~0.5 at 3e-4), then stops its epochs.
 #   bigx  = big + entropy bonus 0.05 -> 0.005 (more exploration; more non-identical rollouts per group)
 # Reward R1, seed 0, same BC start, reader, 300 iterations x 128 episodes as the grid.
 #   0 ppo  big  strict     1 ppo  big  relaxed

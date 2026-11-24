@@ -10,6 +10,10 @@
 #   0 ppo  cov0.5 strict   1 ppo  cov0.5 relaxed   2 grpo cov0.5 strict   3 grpo cov0.5 relaxed
 #   4 ppo  cov1   strict   5 ppo  cov1   relaxed   6 grpo cov1   strict   7 grpo cov1   relaxed
 # cov 1 = the reader never enters the reward (pure "show the right rows" objective).
+#   8 grpo cov1x strict    9 grpo cov1x relaxed    (cov1 + entropy bonus 0.05 -> 0.005, as bigx:
+#     tests whether GRPO's c = 1 deficit is the identical-rollouts / exploration problem)
+# SEED=<n> (default 0) reruns cells with another RL seed; the BC start stays bc-bge-<tier>-s0.
+#   second seed of the 4 significant cells: sbatch --export=ALL,SEED=1 --array=1,3,4,5 slurm/p9_coverage.sh
 # Each task trains (skipped if result.json exists; resumes from last.pt), then scores its best-dev
 # checkpoint on the TEST split -> t-<run>-test/result.json.
 #   l40 (4 running / 5 submitted):  sbatch --array=0-3%4 slurm/p9_coverage.sh
@@ -35,8 +39,12 @@ BIG=(algo.lr_actor=1.0e-4 algo.target_kl=0.02 algo.kl_bc_coef=0.005)
 ARMS=(
   "ppo|0.5|strict"  "ppo|0.5|relaxed"  "grpo|0.5|strict"  "grpo|0.5|relaxed"
   "ppo|1.0|strict"  "ppo|1.0|relaxed"  "grpo|1.0|strict"  "grpo|1.0|relaxed"
+  "grpo|1.0|strict|x"  "grpo|1.0|relaxed|x"
 )
-IFS='|' read -r ALGO COV TIER <<< "${ARMS[$SLURM_ARRAY_TASK_ID]}"
+EXPLORE=(algo.entropy_coef=0.05 algo.entropy_coef_final=0.005)
+IFS='|' read -r ALGO COV TIER X <<< "${ARMS[$SLURM_ARRAY_TASK_ID]}|"
+SEED="${SEED:-0}"
+OV=("${BIG[@]}" seed="$SEED"); [ "$X" = x ] && OV+=("${EXPLORE[@]}")
 SMOKE="${SMOKE:-0}"
 SUFFIX=""; TRAIN_X=(); EVAL_X=()
 if [ "$SMOKE" = 1 ]; then
@@ -44,19 +52,19 @@ if [ "$SMOKE" = 1 ]; then
   QPI=16; [ "$ALGO" = grpo ] && QPI=2   # 16 episodes per iteration either way (GRPO: 2 x 8)
   TRAIN_X=(--limit 50 train.iterations=2 train.eval_every=1 train.questions_per_iter=$QPI)
 fi
-COVTAG="cov${COV%.0}"                  # cov0.5 | cov1
-RUN_ID="$ALGO-r1-$TIER-$COVTAG-s0$SUFFIX"   # e.g. grpo-r1-relaxed-cov0.5-s0
+COVTAG="cov${COV%.0}$X"                # cov0.5 | cov1 | cov1x
+RUN_ID="$ALGO-r1-$TIER-$COVTAG-s$SEED$SUFFIX"   # e.g. grpo-r1-relaxed-cov0.5-s0
 INIT="$RUNS/bc-bge-$TIER-s0$SUFFIX/policy.pt"
 [ -f "$INIT" ] || { echo "no BC checkpoint at $INIT - run slurm/bc_bge.sh first"; exit 1; }
 RESUME=(); [ -f "$RUNS/$RUN_ID/last.pt" ] && RESUME=(--resume)
-echo "job $SLURM_JOB_ID task $SLURM_ARRAY_TASK_ID on $(hostname): $RUN_ID | init $INIT | coverage $COV ${BIG[*]} ${RESUME[*]}"
+echo "job $SLURM_JOB_ID task $SLURM_ARRAY_TASK_ID on $(hostname): $RUN_ID | init $INIT | coverage $COV ${OV[*]} ${RESUME[*]}"
 
 if [ -f "$RUNS/$RUN_ID/result.json" ]; then
   echo "training already finished ($RUNS/$RUN_ID/result.json); only evaluating on test"
 else
   python -m mhtable.train --config "configs/experiments/${ALGO}_real.yaml" --data-dir "$DATA" --out "$RUNS" \
     --run-id "$RUN_ID" "${RESUME[@]}" "${TRAIN_X[@]}" env.tier="$TIER" reward.variant=R1 \
-    reward.coverage="$COV" train.init="$INIT" "${BIG[@]}"
+    reward.coverage="$COV" train.init="$INIT" "${OV[@]}"
 fi
 
 python -m mhtable.evaluate --config configs/experiments/eval.yaml --selector policy \

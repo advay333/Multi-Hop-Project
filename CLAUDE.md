@@ -18,6 +18,24 @@ short-horizon, small-action regime?
 
 `PROJECT.md` and `TASK_01_DATASET.md` were deleted on purpose (superseded); do not resurrect them.
 
+## Current state (2026-11-24) — read this first
+
+- **Phase P9 (PPO vs GRPO with the real reader) is fully run and analysed** on Spider+MMQA (BIRD not
+  used for RL). Full tables: PLAN.md P9. Every run is on HF `mhtable-runs/prajna/<run>` (policy.pt,
+  metrics, test predictions in `t-<run>-test/`); laptop copies without checkpoints in
+  `runs/hf/prajna/` (gitignored); analysis scripts in `scripts/p9/` (README there).
+- **Setup:** reader Qwen2.5-7B-Instruct (bf16, prompt p1, vLLM 0.24 cu129 on Prajna), bge-m3 1,024-d
+  embeddings, MLP actor-critic (3.03M params: 2.05M actor, 0.99M critic), budget 4,096 reader tokens,
+  horizon 5, rewards R0 / R1 (β 0.5, λ_cost 0.1, optional `reward.coverage`). Seed 0 only everywhere.
+- **Headline test EM (strict / relaxed):** oracle 46.4 / 44.8, BC 28.0 / 26.8, heuristic 20.5 / 20.0,
+  whole tables 12.5 / 13.0, random rows 10.6 / 10.9.
+  - From BC with the EM reward (grid lr 1e-5, process GRPO, bigger steps): every arm within about −0.6 … +1.9 of BC; PPO ≈ GRPO; R1 ≈ R0 (identical for outcome GRPO by construction).
+  - From scratch: 2.5–7 below BC; there R1 beats R0 (+2.5 / +2.9).
+  - **Coverage reward (R_ans = (1−c)·EM + c·sufficient, big-step settings): first clear gains over BC.** 4 of 8 cells significant: GRPO c=0.5 relaxed 30.1 (+3.3), PPO c=1 relaxed 29.8 (+3.0), PPO c=0.5 relaxed 29.5 (+2.6), PPO c=1 strict 29.8 (+1.8). At c=1 PPO beats GRPO in both tiers (+2.0 / +1.9): GRPO's 8 rollouts are mostly identical (entropy ~0.05, 73–77% zero-advantage groups), so it gets no signal.
+- **Deliverables:** slide deck https://claude.ai/artifact/L14JT7w3Pi3U8KALxrjhwY (12 slides incl. Appendix B with published MMQA / Spider reference points; includes the coverage results; the user also edits it in the page, so read it before republishing); inference demo `notebooks/demo.py` + `src/mhtable/demo.py` (tests pass, never run on molab — needs the code pushed to GitHub, a GPU and an HF token; Replay mode for the talk).
+- **Open / next (user's call):** a second seed for the 4 significant coverage cells + GRPO c=1 with entropy bonus (both ready in `slurm/p9_coverage.sh`, PLAN P9); first molab demo run + 10–15 replay traces; report text with the single-seed caveat.
+- 136 tests pass (`pytest -m "not network"`, ~100 s). Uncommitted work is listed by `git status`; the user commits.
+
 ## Status (2026-11-17)
 
 - **P0 repo + storage — done.** **P1 data — done** (`data-v1`). **P2 oracle — done.**
@@ -111,9 +129,9 @@ short-horizon, small-action regime?
     - About 1 h per RL run on L40S/A40 (estimate was 2–5 h). A40 works too.
     - Read a gate with `python -m mhtable.analysis.gate <runs dir>`.
   - **Test baselines** (`baselines_test.sh`), EM strict / relaxed: oracle 46.4 / 44.8, BC 28.0 / 26.8, heuristic 20.5 / 20.0, B1 truncate 12.5 / 13.0, B2 random 10.6 / 10.9. B1 and B2 show the answer 80%+ of the time but whole tables confuse the reader. The test oracle is lower than dev's (59).
-  - **Grid (`p9_grid.sh`, 8 cells) and process GRPO (`p9_process.sh`, R1 × 2 tiers × λ 0.5 / 0.95) both COMPLETED 2026-11-23; not yet analysed.**
+  - **Grid (`p9_grid.sh`, 8 cells) and process GRPO (`p9_process.sh`, R1 × 2 tiers × λ 0.5 / 0.95) both COMPLETED and analysed 2026-11-23 (results below).**
     - Tasks 3 and 5 were resumed after a node fault on cn43-l40, so keep the last metrics row per iteration.
-    - Results must be fetched: HF `mhtable-runs/prajna/` has only the BC runs (the first upload loop's globs ran in the wrong folder; corrected loop given), and the laptop `runs/prajna/` has only gate-era files.
+    - All results are on HF (the first upload loop had a glob bug; fixed). Download with `scripts/p9/fetch_runs.py`.
     - Prajna paths: home `/home/cs769/cs769_02`, repo `.../Multi-Hop-Project`, runs `.../mhtable-runs`. Windows `scp` needs absolute remote paths (no `~`). Move results with tar (`--exclude='*.pt'`) + scp into `runs/prajna/`; push checkpoints with `python -m mhtable.storage push runs <dir> prajna/<run>`.
   - **Shaping caveat (2026-11-23):** with Φ(terminal) = 0 and γ = 1, R1 is invisible to outcome GRPO (R1 ≡ R0 exactly) and reaches PPO only through λ = 0.95 truncation and the critic. Process GRPO (`algo.advantage: process`, λ < 1) is the ablation that sees the shaping. 127 tests pass.
   - **P9 results (2026-11-23, PLAN P9 table):**
@@ -121,8 +139,8 @@ short-horizon, small-action regime?
     - Only relaxed PPO-R1/R0 and GRPO-R0 beat BC significantly (paired bootstrap). Arm-vs-arm differences are noise; GRPO R1 ≈ R0; process GRPO gives no gain.
     - The policies stay 74–89% identical to BC.
   - **Big-step + from-scratch runs done 2026-11-23 (PLAN P9 table; all 6 on HF):** bigger steps move policies 0.4–1.8 KL from BC with no EM gain; from scratch reaches best dev 27–30 but test 2.5–7 pts below BC; shaping R1 beats R0 from scratch (+2.5 / +2.9, significant); PPO ≈ GRPO everywhere.
-  - **Coverage-reward grid written 2026-11-24, not run:** `slurm/p9_coverage.sh` (8 runs, `reward.coverage` 0.5 / 1.0 × PPO/GRPO × tier, big-step settings; PLAN P9). R_ans = (1 − c)·EM + c·sufficient; 136 tests pass.
-  - **Next:** slides (flow agreed 2026-11-23, 9 slides + appendix), plots + report text; the molab inference demo (ideated in PLAN P9, not coded); optionally a larger-step RL run.
+  - **Coverage-reward grid DONE 2026-11-24 (results in "Current state" above and PLAN P9):** `slurm/p9_coverage.sh` (8 runs, `reward.coverage` 0.5 / 1.0 × PPO/GRPO × tier, big-step settings; PLAN P9). R_ans = (1 − c)·EM + c·sufficient; 136 tests pass.
+  - **Next:** see "Current state" at the top.
 - **Next (PLAN §4b, agreed 2026-11-18): three independent tracks, then P9.** A: fix G-8 (laptop,
   mock reader). B: BIRD look-ahead speed (molab only). C: P4 (hf / vLLM readers, bge-m3 encoder +
   embedding cache, full metric suite, reader tokenizer in `materialise`) + P6 baselines — the
@@ -140,6 +158,12 @@ short-horizon, small-action regime?
   `policies/`, `rewards.py`, `rollout.py`, `algos/base.py`, `readers/`, `encoders/`, `metrics.py`,
   `firewall.py`, `sufficiency.py`), `analysis/` (action_fit,
   coverage, reach — G-6 without databases, works for BIRD on the laptop), `storage.py`, `types.py`, `config.py`, `registry.py`.
+- P9 results workflow: Prajna jobs write `~/mhtable-runs/<run>` and `t-<run>-test`; the user pushes
+  them from the login node with `for d in /home/cs769/cs769_02/mhtable-runs/{<globs>}; do [ -f "$d/result.json" ]
+  || continue; python -m mhtable.storage push runs "$d" "prajna/$(basename $d)" -m "Prajna run $(basename $d)"; done`
+  (venv active, repo as cwd, absolute globs); the laptop pulls them with `scripts/p9/fetch_runs.py <substr>` and
+  analyses with `scripts/p9/*.py`. Run-name patterns: `<algo>-<r0|r1>-<tier>-{lr1e-5|big|bigx|scratch|cov0.5|cov1}-s0`,
+  `grpoproc-r1-<tier>-lr1e-5-lam<λ>-s0`, `bc-bge-<tier>-s0`; test baselines `t-<oracle|heuristic|truncate|random_rows>-test`, BC test `t-bc-<tier>-test`.
 - Data: **all on private HuggingFace repos** under `advay333/`: `mhtable-raw` (sources),
   `mhtable-data` (built data, SQLite DBs, `index/`; tags `data-v1`, `data-v2`), `mhtable-cache`,
   `mhtable-runs`. Local `data/` is only a cache (gitignored, except `data/DATASET_CARD.md`).

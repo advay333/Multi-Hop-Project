@@ -108,6 +108,28 @@ def test_shaping_telescopes(setup):
         assert any(s.reward != 0 for x in a for s in x.steps[:-1])  # the potential does discriminate steps
 
 
+class WrongReader(MockReader):
+    """Always answers wrongly: a reader error on a good sub-table."""
+
+    def read_batch(self, questions, subtables, meta=None):
+        super().read_batch(questions, subtables, meta)  # same gold-meta check as the mock
+        return ["nope"] * len(questions)
+
+
+def test_coverage_reward_credits_a_sufficient_subtable_the_reader_got_wrong(setup):
+    env, _, _, golds = setup
+    for cov, expect_ans in ((0.0, 0.0), (0.5, 0.5), (1.0, 1.0)):
+        cfg = RewardConfig("R0", beta=0.5, lambda_cost=0.0, coverage=cov)
+        (tr,) = collect(env, Scripted(GOLD), WrongReader(), [_inst()], oracle_mode="reward", golds=golds, reward_cfg=cfg)
+        assert tr.info["r_ans"] == 0.0 and tr.info["sufficient"]  # logged EM stays the reader's
+        assert sum(s.reward for s in tr.steps) == pytest.approx(expect_ans)
+    cfg = RewardConfig("R0", lambda_cost=0.0, coverage=0.5)
+    assert cfg.answer_reward(1.0, True) == 1.0 and cfg.answer_reward(1.0, False) == 0.5
+    assert cfg.answer_reward(0.0, False) == 0.0
+    with pytest.raises(ValueError, match="coverage"):
+        RewardConfig(coverage=1.5)
+
+
 def test_curriculum_starts_after_gold_steps(setup):
     env, _, _, golds = setup
     cfg = RewardConfig("R1", beta=0.5, lambda_cost=0.0)

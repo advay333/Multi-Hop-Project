@@ -548,7 +548,7 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   - Settings = G-8 arm E: lr 3e-4, frozen temperature, constant entropy 0.05. 1000 iterations × 128 episodes; curriculum annealed over 300 iterations. 24 h limit; resumes from last.pt.
   - Array of 6: PPO R1, PPO R0 and GRPO R1, each × strict/relaxed. GRPO R0 is not run, because it equals R1.
   - Run IDs `<algo>-<r1|r0>-<tier>-scratch-s0`. Expected to land below BC; the comparison of interest is between the arms.
-- **Big-step + from-scratch results (2026-11-23; all on HF except `grpo-r1-relaxed-scratch-s0`, not uploaded).** Test EM, paired Δ vs BC [95% CI], share of test questions with the same sub-table as BC:
+- **Big-step + from-scratch results (2026-11-23; all on HF, `grpo-r1-relaxed-scratch-s0` added 2026-11-24).** Test EM, paired Δ vs BC [95% CI], share of test questions with the same sub-table as BC:
 
   | Run | Strict EM | Δ vs BC | same as BC | Relaxed EM | Δ vs BC | same as BC |
   |---|---|---|---|---|---|---|
@@ -560,12 +560,16 @@ Each phase ends with a **gate**: a concrete check that must pass before building
   | GRPO R1 bigx | 28.3 | +0.3 [−1.5, +2.1] | 59% | — | — | — |
   | PPO R1 scratch | 24.1 | −3.9 [−6.6, −1.3] | 17% | 22.9 | −3.9 [−6.2, −1.6] | 20% |
   | PPO R0 scratch | 21.6 | −6.4 [−8.9, −4.0] | 16% | 20.1 | −6.8 [−9.2, −4.3] | 16% |
-  | GRPO R1 scratch | 23.9 | −4.1 [−6.8, −1.5] | 12% | — | — | — |
+  | GRPO R1 scratch | 23.9 | −4.1 [−6.8, −1.5] | 12% | 24.3 | −2.5 [−5.0, +0.1] | 13% |
 
   - **Bigger steps move the policy but don't improve it.** KL to BC reaches 0.4–1.8 (grid: 0.01–0.18) and 32–41% of test sub-tables change, yet EM stays within ±1 of BC. PPO-R1-strict-big never beat BC on dev, so its best checkpoint is iteration 0 (= BC). bigx raises GRPO's useful groups (zero-advantage 31% vs 62–81%) without an EM gain.
-  - **From scratch, RL learns a lot but stays below BC:** dev EM 9–12 → best 27–30 (BC 27–32); test 4–7 pts below BC. The policies find different routes (path match 13–17% vs BC 38%) that still show the answer about as often (57–58% for R1). Dev curves are noisy; PPO-R0 strict ended at 12.9 (best checkpoint 26.7 used).
+  - **From scratch, RL learns a lot but stays below BC:** dev EM 9–12 → best 27–30 (BC 27–32); test 2.5–7 pts below BC (all significant except GRPO R1 relaxed, −2.5 [−5.0, +0.1]). The policies find different routes (path match 13–17% vs BC 38%) that still show the answer about as often (57–58% for R1). Dev curves are noisy; PPO-R0 strict ended at 12.9 (best checkpoint 26.7 used).
   - **Shaping helps from scratch:** PPO R1 − R0 = +2.5 [+0.1, +4.9] strict, +2.9 [+0.7, +5.0] relaxed. The only significant R1 vs R0 effect in the project (from BC they tie).
-  - **Critic still doesn't matter:** PPO R1 vs GRPO R1 from scratch (strict) +0.2 [−2.1, +2.6].
+  - **Critic still doesn't matter:** PPO R1 vs GRPO R1 from scratch +0.2 [−2.0, +2.4] strict, −1.4 [−3.7, +0.8] relaxed.
+- **Coverage-reward follow-up (`slurm/p9_coverage.sh`; code done 2026-11-24, 136 tests pass; not yet run).** Idea: the KL-to-BC anchor is not what limits RL (looser runs moved further without gains); the reward signal is. New `reward.coverage` = c: R_ans = (1 − c)·EM + c·Suff, Suff = `sufficiency.sufficient` (the sub-table shows the rows the answer needs, within budget; reader-free, already computed per episode). Logged `em`, dev selection and test scoring stay EM.
+  - Grid of 8, all R1, BC start, the big-step settings (lr 1e-4, target_kl 0.02, KL-to-BC 0.005), 300 iterations, seed 0: {PPO, GRPO} × {strict, relaxed} × c ∈ {0.5, 1.0}. Baseline per cell = the matching `*-big-s0` run (c = 0). c = 1 removes the reader from the reward.
+  - Run IDs `<algo>-r1-<tier>-cov<0.5|1>-s0`. Submit: `sbatch --array=0-3%4 slurm/p9_coverage.sh` (l40) and `sbatch --partition=a40 --qos=a40 --array=4-7%3 slurm/p9_coverage.sh`; smoke first with `SMOKE=1 --array=2`.
+  - Rejected for now: training only on questions BC gets wrong (risk of drifting on the ones BC gets right; the user preferred this option).
 - Earlier plan: get the results (HF push + laptop archive), then the P9 table (8 grid cells + 4 process-GRPO rows + test baselines) and dev curves against reader calls; check that GRPO-R1 ≈ GRPO-R0 empirically.
 - **Inference demo: code done 2026-11-23, not yet run on molab.** `src/mhtable/demo.py` (core, DESIGN §6.6) + `notebooks/demo.py` (marimo UI) + `tests/test_demo.py` (8 tests; 135 pass in total).
   - Extensible: runs pushed to HF `mhtable-runs/prajna/` appear automatically (big-step and from-scratch runs included).

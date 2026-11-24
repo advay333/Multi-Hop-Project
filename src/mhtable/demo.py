@@ -76,6 +76,8 @@ _RUN_PATTERNS = [  # (regex, group, label template); named groups: algo, rew, ti
      "Process GRPO {REW} λ{lam}"),
     (r"^(?P<algo>ppo|grpo)-(?P<rew>r[01])-(?P<tier>strict|relaxed)-(?P<set>big|bigx)-s\d+$", "bigstep",
      "{ALGO} {REW} ({set})"),
+    (r"^(?P<algo>ppo|grpo)-(?P<rew>r[01])-(?P<tier>strict|relaxed)-cov(?P<cov>[^-]+)-s\d+$", "coverage",
+     "{ALGO} {REW} coverage {cov}"),
     (r"^(?P<algo>ppo|grpo)-(?P<rew>r[01])-(?P<tier>strict|relaxed)-scratch-s\d+$", "scratch",
      "{ALGO} {REW} from scratch"),
     (r"^(?P<algo>ppo|grpo)-(?P<rew>r[01])-(?P<tier>strict|relaxed)-lr(?P<lr>.+?)-s\d+$", "grid",  # lr may hold "-"

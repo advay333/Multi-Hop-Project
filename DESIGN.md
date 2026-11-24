@@ -432,6 +432,8 @@ resamples, 95% interval, p). The rollout computes the per-question extras only w
 `R0` sparse | `R1` shaped, `beta`, `lambda_cost`). Outputs: per-step rewards written into
 `Step.reward`, and `phi` for logging.
 `r_t = β[Φ(s_{t+1}) − Φ(s_t)] + 1[a_t = STOP]·(R_ans − λ_c·tok/B)`.
+`R_ans = (1 − c)·EM + c·Suff` with `coverage` = c (default 0 = EM only; Suff = `sufficiency.sufficient`,
+reader-free). `info["r_ans"]` stays the reader's EM, so logs, dev selection and test scoring are EM.
 
 **`rollout.py`** — the shared collector.
 ```python

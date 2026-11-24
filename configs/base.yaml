@@ -43,3 +43,4 @@ reward:
   variant: R1           # R0 sparse | R1 shaped
   beta: 0.5
   lambda_cost: 0.1
+  coverage: 0.0         # R_ans = (1 - coverage) * EM + coverage * sufficient (rewards.py); 0 = EM only

@@ -12,6 +12,17 @@ policy is best. The token cost does change the objective, on purpose.
 Variants: R0 sparse (beta = 0) | R1 shaped (default).
 An episode started after k gold steps (curriculum) begins at Phi(s_k) > 0; its shaping terms
 then sum to -beta * Phi(s_k), a constant for that start state.
+
+Answer term (`coverage`, P9 follow-up "coverage reward"):
+
+    R_ans = (1 - coverage) * EM  +  coverage * Suff
+
+Suff is `sufficiency.sufficient`: the sub-table shows the rows the answer needs, fits the budget,
+and is non-empty — gold-aware, reader-free and already computed for every training episode.
+coverage = 0 (default) is the plain EM reward of every earlier run. EM is right/wrong and also
+fails when the reader errs on a good sub-table; Suff rewards the policy's own job (showing the
+right rows), separates "close" from "useless" failures, and so breaks ties inside GRPO groups.
+Logged `em` stays the reader's exact match; dev selection still uses EM.
 """
 
 from __future__ import annotations
@@ -27,10 +38,17 @@ class RewardConfig:
     variant: str = "R1"  # R0 sparse | R1 shaped
     beta: float = 0.5
     lambda_cost: float = 0.1
+    coverage: float = 0.0  # weight of the sufficiency term in R_ans (0 = EM only)
 
     def __post_init__(self):
         if self.variant not in ("R0", "R1"):
             raise ValueError(f"unknown reward variant {self.variant!r} (R0 | R1)")
+        if not 0.0 <= self.coverage <= 1.0:
+            raise ValueError(f"reward.coverage must be in [0, 1], got {self.coverage}")
+
+    def answer_reward(self, em: float, sufficient: bool) -> float:
+        """R_ans: exact match, mixed with sub-table sufficiency when `coverage` > 0."""
+        return (1.0 - self.coverage) * float(em) + self.coverage * float(bool(sufficient))
 
     @property
     def shaping(self) -> float:

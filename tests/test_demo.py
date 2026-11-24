@@ -50,6 +50,7 @@ def test_parse_run_ids_of_every_script():
     assert parse_run_id("grpo-r1-strict-bigx-s0") == ("GRPO R1 (bigx)", "bigstep", "strict")
     assert parse_run_id("ppo-r0-relaxed-scratch-s0") == ("PPO R0 from scratch", "scratch", "relaxed")
     assert parse_run_id("bc-bge-strict-s0") == ("BC", "bc", "strict")
+    assert parse_run_id("grpo-r1-relaxed-cov0.5-s0") == ("GRPO R1 coverage 0.5", "coverage", "relaxed")
     assert parse_run_id("something-new-strict-v2") == ("something-new-strict-v2", "other", "strict")
 
 

@@ -243,7 +243,8 @@ def run_rl(cfg: Config, env, feat, policy, algo, reader, run_dir: Path, limit: i
     iterations, per_iter = int(t.get("iterations", 300)), int(t.get("questions_per_iter", 128))
     eval_every = int(t.get("eval_every", 25))
     p0, p_iters = float(t.get("curriculum_start", 0.5)), int(t.get("curriculum_iters", 100))
-    rcfg = RewardConfig(cfg.reward.variant, cfg.reward.beta, cfg.reward.lambda_cost)
+    rcfg = RewardConfig(cfg.reward.variant, cfg.reward.beta, cfg.reward.lambda_cost,
+                        float(cfg.get_path("reward.coverage", 0.0)))
     cache: dict = {}
 
     pool = load_split(env.data, "train", tier, sources, limit, seed)

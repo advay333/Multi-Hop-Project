@@ -212,5 +212,6 @@ def collect(env, actor, reader: Reader | CachedReader, instances: list[Instance]
                                hops=entity_overlap(env, final, gold, suff_cache.setdefault(final.instance.db_ref, {})),
                                **item_counts(final.joins, final.anchors, gold.gold_edges, gold.gold_anchors))
             if oracle_mode == "reward":
-                assemble(tr, st, gold, tr.info["r_ans"], reward_cfg, budget)
+                r = reward_cfg.answer_reward(tr.info["r_ans"], tr.info["sufficient"])
+                assemble(tr, st, gold, r, reward_cfg, budget)
     return trajs

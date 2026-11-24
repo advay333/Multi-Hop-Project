@@ -3,7 +3,7 @@
 # the job line, the C build check, any Python traceback / error, whether it reached the end, and
 # for the run it trained: train result.json (iterations done, final dev EM) and the test result.
 #   bash slurm/check_smoke.sh slurm/logs/p9_big_<JOBID>_2.out slurm/logs/p9_scratch_<JOBID>_4.out
-#   bash slurm/check_smoke.sh            (no arguments: the 2 newest p9_big_* and p9_scratch_* logs)
+#   bash slurm/check_smoke.sh            (no arguments: the newest p9_big_*, p9_scratch_* and p9_cov_* log)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 RUNS="$HOME/mhtable-runs"
@@ -11,7 +11,7 @@ source "$HOME/mhtable-venv/bin/activate" 2>/dev/null || true
 
 LOGS=("$@")
 if [ ${#LOGS[@]} -eq 0 ]; then
-  for pat in p9_big p9_scratch; do
+  for pat in p9_big p9_scratch p9_cov; do
     f=$(ls -t slurm/logs/${pat}_*.out 2>/dev/null | head -1); [ -n "$f" ] && LOGS+=("$f")
   done
 fi
